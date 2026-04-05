@@ -1,0 +1,51 @@
+import os
+import sys
+import unittest
+
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from app.engine.economy import (  # noqa: E402
+    calculate_development_cost,
+    get_rent_multiplier,
+    property_is_fully_developed,
+)
+
+
+class EconomyEngineTests(unittest.TestCase):
+    def test_minarchism_development_cost_scales_after_four_houses(self):
+        state = {
+            'econ': {'gov_type': 'minarchism'},
+            'settings': {'government_type': 'minarchism'},
+        }
+
+        self.assertEqual(calculate_development_cost(200, 4, state), 100.0)
+        self.assertEqual(calculate_development_cost(200, 5, state), 135.0)
+        self.assertEqual(calculate_development_cost(200, 6, state), 205.0)
+
+    def test_minarchism_rent_multiplier_keeps_scaling_without_hotel_cap(self):
+        state = {
+            'econ': {'gov_type': 'minarchism'},
+            'settings': {'government_type': 'minarchism'},
+        }
+
+        self.assertEqual(get_rent_multiplier(4, state), 30.0)
+        self.assertEqual(get_rent_multiplier(5, state), 38.0)
+        self.assertEqual(get_rent_multiplier(6, state), 46.0)
+
+    def test_only_non_minarchism_properties_have_a_hard_development_cap(self):
+        liberal_state = {
+            'econ': {'gov_type': 'liberal_democracy'},
+            'settings': {'government_type': 'liberal_democracy'},
+        }
+        minarchism_state = {
+            'econ': {'gov_type': 'minarchism'},
+            'settings': {'government_type': 'minarchism'},
+        }
+
+        self.assertTrue(property_is_fully_developed({'dev_level': 5}, liberal_state))
+        self.assertFalse(property_is_fully_developed({'dev_level': 9}, minarchism_state))
+
+
+if __name__ == '__main__':
+    unittest.main()

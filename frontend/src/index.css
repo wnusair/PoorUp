@@ -1,0 +1,194 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/* Base                                                                 */
+/* ------------------------------------------------------------------ */
+
+@layer base {
+  html {
+    @apply bg-gray-950 text-gray-100;
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-900;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-600 rounded;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Board                                                                */
+/* ------------------------------------------------------------------ */
+
+@layer components {
+  .board-space {
+    @apply relative flex flex-col items-center justify-center border border-gray-700
+           bg-gray-900 text-xs text-center overflow-hidden transition-colors;
+  }
+
+  .board-space:hover {
+    @apply bg-gray-800;
+  }
+
+  .board-space--corner {
+    @apply w-16 h-16 text-[10px];
+  }
+
+  .board-space--edge {
+    @apply text-[9px];
+  }
+
+  .group-color-strip {
+    @apply absolute top-0 left-0 right-0 h-1.5;
+  }
+
+  .ownership-dot {
+    @apply absolute bottom-0.5 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full border border-gray-900;
+  }
+
+  /* Player token */
+  .player-token {
+    @apply w-8 h-8 rounded-full border-2 border-white shadow-md;
+    transition: all 0.15s ease;
+  }
+
+  @keyframes tokenBounce {
+    from { transform: scale(1.1) translateY(0px); }
+    to   { transform: scale(1.2) translateY(-3px); }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Log                                                                  */
+/* ------------------------------------------------------------------ */
+
+@layer components {
+  .log-entry {
+    @apply text-xs py-0.5 px-1 border-b border-gray-800/50;
+    animation: slideIn 0.2s ease-out;
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Modals                                                               */
+/* ------------------------------------------------------------------ */
+
+@layer components {
+  .modal-overlay {
+    @apply fixed inset-0 bg-black/70 backdrop-blur-sm z-50
+           flex items-center justify-center p-4;
+  }
+
+  .modal-panel {
+    @apply bg-gray-900 border border-gray-700 rounded-xl shadow-2xl
+           w-full max-w-md p-6;
+  }
+
+  .modal-panel--wide {
+    @apply max-w-3xl;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                              */
+/* ------------------------------------------------------------------ */
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 font-semibold
+           rounded-lg px-4 py-2 text-sm transition-all focus:outline-none
+           focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-blue-600 hover:bg-blue-500 text-white focus:ring-blue-500;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-700 hover:bg-red-600 text-white focus:ring-red-500;
+  }
+
+  .btn-success {
+    @apply btn bg-green-700 hover:bg-green-600 text-white focus:ring-green-500;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent hover:bg-gray-800 text-gray-300 border border-gray-700;
+  }
+
+  .btn-sm {
+    @apply px-3 py-1 text-xs;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Economy dashboard                                                    */
+/* ------------------------------------------------------------------ */
+
+@layer components {
+  .econ-stat {
+    @apply flex flex-col gap-0.5 p-2 bg-gray-800 rounded-lg;
+  }
+
+  .econ-stat__label {
+    @apply text-[10px] uppercase tracking-wide text-gray-500;
+  }
+
+  .econ-stat__value {
+    @apply text-sm font-bold;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Turn timer animations                                                */
+/* ------------------------------------------------------------------ */
+
+@layer utilities {
+  .pulse-red {
+    animation: pulseRed 0.5s ease-in-out infinite;
+  }
+
+  @keyframes pulseRed {
+    0%, 100% { color: #ef4444; }
+    50%       { color: #fca5a5; }
+  }
+
+  .uprising-flash {
+    animation: uprisingFlash 0.3s ease-in-out 3;
+  }
+
+  @keyframes uprisingFlash {
+    0%, 100% { background-color: transparent; }
+    50%       { background-color: rgba(239, 68, 68, 0.3); }
+  }
+
+  .hyper-flash {
+    animation: hyperFlash 1s ease-in-out infinite;
+  }
+
+  @keyframes hyperFlash {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.5; }
+  }
+}

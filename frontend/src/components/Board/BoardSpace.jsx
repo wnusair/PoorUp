@@ -1,0 +1,281 @@
+import { useGameStore } from '../../hooks/useGameState';
+import { SPACE_ICONS, needsDarkText } from '../../utils/constants';
+import { getBoardDevelopmentDisplay, getDevelopmentLabel } from '../../utils/propertyEconomy';
+
+function UnionBanner({ visible }) {
+  if (!visible) {
+    return null;
+  }
+
+  return (
+    <div className="absolute inset-x-0 top-0 z-20 border-b border-red-100/20 bg-gradient-to-r from-red-700 via-rose-700 to-red-800 px-1 py-0.5 text-center text-[0.4rem] font-black uppercase tracking-[0.24em] text-white pointer-events-none">
+      Union Control
+    </div>
+  );
+}
+
+function SocialMarker({ space }) {
+  const incidentType = space.social_incident_type;
+  const unionized = Boolean(space.social_unionized);
+
+  if (!incidentType && !unionized) {
+    return null;
+  }
+
+  const incidentPalette = {
+    protest: 'bg-amber-400 text-black',
+    strike: 'bg-orange-500 text-white',
+    uprising: 'bg-red-500 text-white',
+    revolution: 'bg-rose-700 text-white',
+  };
+
+  return (
+    <div className="absolute right-1 top-1 z-10 flex flex-col items-end gap-1 pointer-events-none">
+      {incidentType && (
+        <span
+          className={[
+            'rounded-full px-1.5 py-0.5 text-[0.45rem] font-bold uppercase tracking-[0.18em]',
+            incidentPalette[incidentType] || 'bg-slate-600 text-white',
+          ].join(' ')}
+          title={incidentType}
+        >
+          {incidentType === 'uprising' ? 'CRK' : incidentType === 'revolution' ? 'REV' : incidentType[0]}
+        </span>
+      )}
+      {unionized && (
+        <span
+          className="rounded-full bg-cyan-300 px-1.5 py-0.5 text-[0.42rem] font-bold uppercase tracking-[0.16em] text-slate-950"
+          title="Unionized property"
+        >
+          U
+        </span>
+      )}
+    </div>
+  );
+}
+
+function DevelopmentMarker({ level, orientation, incidentType, unionized, economy }) {
+  if (unionized || incidentType === 'revolution') {
+    return null;
+  }
+
+  if (incidentType === 'strike' || incidentType === 'uprising') {
+    return (
+      <div
+        className="absolute left-1 right-1 rounded-full border border-red-100/20 bg-gradient-to-r from-red-700 via-red-500 to-red-700 shadow-red-950/40"
+        style={{
+          bottom: orientation === 'left' || orientation === 'right' ? '3px' : '4px',
+          height: orientation === 'left' || orientation === 'right' ? '6px' : '7px',
+        }}
+        title={incidentType === 'uprising' ? 'Uprising damage and strike shutdown' : 'Strike shutdown'}
+      />
+    );
+  }
+
+  if (!level || level <= 0) {
+    return null;
+  }
+
+  const isVertical = orientation === 'left' || orientation === 'right';
+  const { houses, hasHotel, extraHouses } = getBoardDevelopmentDisplay(level, economy);
+
+  return (
+    <div
+      className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center gap-0.5"
+      style={{
+        bottom: isVertical ? '2px' : '3px',
+        maxWidth: 'calc(100% - 6px)',
+      }}
+      title={getDevelopmentLabel(level, economy)}
+    >
+      {Array.from({ length: houses }).map((_, index) => (
+        <span
+          key={index}
+          className="rounded-sm border border-black/30 bg-emerald-400"
+          style={{
+            width: isVertical ? '4px' : '5px',
+            height: isVertical ? '4px' : '5px',
+            boxShadow: '0 0 0 1px rgba(0,0,0,0.15)',
+          }}
+        />
+      ))}
+      {hasHotel && (
+        <span
+          className="rounded-sm border border-black/30 bg-amber-400 text-[0.35rem] font-bold leading-none text-black"
+          style={{
+            minWidth: isVertical ? '7px' : '8px',
+            height: isVertical ? '6px' : '7px',
+            padding: '0 1px',
+          }}
+        >
+          H
+        </span>
+      )}
+      {!hasHotel && extraHouses > 0 && (
+        <span
+          className="rounded-full border border-black/30 bg-amber-400 px-1 text-[0.38rem] font-bold leading-none text-black"
+          style={{ minHeight: isVertical ? '7px' : '8px' }}
+        >
+          +{extraHouses}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function SpaceLabel({ space, owner, orientation, economy }) {
+  const isVertical = orientation === 'left' || orientation === 'right';
+  const icon = SPACE_ICONS[space.type];
+  const developmentLevel = Number(space.dev_level ?? space.development_level ?? 0) || 0;
+
+  if (space.type === 'property' || space.type === 'transit') {
+    const unionized = Boolean(space.social_unionized);
+    const incidentType = space.social_incident_type;
+
+    return (
+      <div className="flex flex-col h-full w-full overflow-hidden">
+        {/* Group color bar */}
+        {space.groupColor && (
+          <div
+            className="flex-shrink-0"
+            style={{
+              backgroundColor: space.groupColor,
+              height: isVertical ? '6px' : '8px',
+              width: '100%',
+            }}
+          />
+        )}
+        <div className="flex-1 flex flex-col items-center justify-center p-0.5 gap-0.5 overflow-hidden">
+          {space.type === 'transit' && (
+            <span className="text-[0.45rem] font-semibold uppercase tracking-[0.16em] text-gray-300">AIR</span>
+          )}
+          <span
+            className="text-center leading-tight font-medium"
+            style={{
+              fontSize: isVertical ? '0.5rem' : '0.45rem',
+              color: '#e5e7eb',
+              wordBreak: 'break-word',
+              maxWidth: '100%',
+            }}
+          >
+            {space.name}
+          </span>
+          {owner && !unionized && incidentType !== 'revolution' && (
+            <div
+              className="flex items-center justify-center rounded-sm border border-white/20 shadow-sm"
+              style={{
+                width: isVertical ? '12px' : '14px',
+                height: isVertical ? '12px' : '14px',
+                backgroundColor: owner.color_hex || '#555',
+                color: needsDarkText(owner.color_hex || '#555') ? '#111' : '#fff',
+                fontSize: isVertical ? '0.42rem' : '0.45rem',
+                fontWeight: 700,
+              }}
+              title={`Owned by ${owner.username}`}
+            >
+              {owner.username?.[0]?.toUpperCase() || '?'}
+            </div>
+          )}
+          {!owner && space.social_unionized && (
+            <div
+              className="flex items-center justify-center rounded-sm border border-white/20 bg-cyan-300 text-[0.42rem] font-bold text-slate-950 shadow-sm"
+              style={{
+                minWidth: isVertical ? '12px' : '14px',
+                height: isVertical ? '12px' : '14px',
+              }}
+              title="Proletariat Union"
+            >
+              U
+            </div>
+          )}
+          {space.basePrice && (
+            <span style={{ fontSize: '0.45rem', color: '#9ca3af' }}>
+              ${space.basePrice}
+            </span>
+          )}
+        </div>
+        {space.type === 'property' && (
+          <DevelopmentMarker
+            level={developmentLevel}
+            orientation={orientation}
+            incidentType={incidentType}
+            unionized={unionized}
+            economy={economy}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // Special spaces (start, jail, free, go_to_jail, chance, community_chest, tax)
+  return (
+    <div className="flex flex-col h-full w-full items-center justify-center p-1 gap-0.5 overflow-hidden">
+      {icon && (
+        <span
+          className="font-bold uppercase tracking-[0.16em] text-gray-200"
+          style={{ fontSize: isVertical ? '0.42rem' : '0.5rem' }}
+        >
+          {icon}
+        </span>
+      )}
+      <span
+        className="text-center font-semibold leading-tight"
+        style={{
+          fontSize: isVertical ? '0.42rem' : '0.48rem',
+          color: '#e5e7eb',
+          wordBreak: 'break-word',
+          maxWidth: '100%',
+        }}
+      >
+        {space.name}
+      </span>
+    </div>
+  );
+}
+
+export default function BoardSpace({
+  space,
+  owner = null,
+  orientation = 'bottom',
+  isCorner = false,
+  onClick,
+}) {
+  if (!space) return null;
+  const economy = useGameStore((state) => state.economy);
+
+  // Corner tiles are square and larger, edge tiles are thinner
+  const cornerClass = 'w-full h-full';
+  const edgeClass = 'w-full h-full';
+
+  const bgColors = {
+    start: '#1a3a1a',
+    jail: '#1a1a3a',
+    free: '#1a2a1a',
+    go_to_jail: '#3a1a1a',
+    chance: '#2a2a1a',
+    community_chest: '#1a2a3a',
+    tax: '#3a2a1a',
+    property: '#111827',
+    transit: '#111827',
+  };
+
+  const bg = bgColors[space.type] || '#111827';
+  const revolutionary = space.social_incident_type === 'revolution' || space.social_unionized;
+
+  return (
+    <div
+      className={[
+        'relative border border-gray-700 cursor-pointer hover:border-gray-400 transition-colors overflow-hidden',
+        revolutionary ? 'bg-red-950/70 border-red-500/70 hover:border-rose-500' : '',
+        isCorner ? cornerClass : edgeClass,
+      ].join(' ')}
+      style={{ backgroundColor: revolutionary ? '#450a0a' : bg }}
+      onClick={() => onClick && onClick(space)}
+      title={`${space.name}${space.basePrice ? ` — $${space.basePrice}` : ''}`}
+    >
+      <UnionBanner visible={revolutionary} />
+      <SocialMarker space={space} />
+      <SpaceLabel space={space} owner={owner} orientation={orientation} economy={economy} />
+    </div>
+  );
+}
