@@ -8,6 +8,7 @@ import SidebarMenuStack from './SidebarMenuStack';
 import StabilityWidget from './StabilityWidget';
 import TradeQueueWidget from './TradeQueueWidget';
 import DealsWidget from './DealsWidget';
+import RoundTaxNotice from './RoundTaxNotice';
 import GameLog from '../Log/GameLog';
 import TradeFeed from '../Trade/TradeFeed';
 
@@ -90,7 +91,11 @@ export default function GameLayout({ socketActions, myPlayerId }) {
         {/* Left: Board + Log */}
         <div className="flex flex-col flex-1 overflow-hidden">
           {/* Board area — scales to fill */}
-          <div className="flex-1 overflow-hidden bg-gray-950">
+          <div className="relative flex-1 overflow-hidden bg-gray-950">
+            <RoundTaxNotice
+              myPlayerId={myPlayerId}
+              onOpenDetails={() => setActiveModal('taxation')}
+            />
             <GameBoard
               players={players}
               properties={properties}

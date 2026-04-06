@@ -58,6 +58,23 @@ Production behavior:
 
 Point the DNS A record for `poorup.wnusair.org` at your Debian server before starting the stack. If you want HTTPS, terminate TLS on the host with Nginx, Caddy, or another reverse proxy in front of this stack, or extend the included Nginx config with your certificates.
 
+### Updating An Existing Production Stack
+
+If the production containers are already running and you want to pull the latest code onto the server, use:
+
+```bash
+cd /path/to/PoorUp
+
+git pull origin main
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+That sequence keeps the named Postgres volume intact, rebuilds the frontend/backend images from the latest source, and recreates only the containers that need updating. If you want to remove unused old image layers afterward, run:
+
+```bash
+docker image prune -f
+```
+
 ---
 
 ## Manual Setup (without Docker)

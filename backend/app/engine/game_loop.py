@@ -1013,10 +1013,10 @@ def run_turn(
         tax_amt, _ = apply_income_tax(pre_resolution_player, econ, settings)
         game_state = record_tax_payment(game_state, player_id, "income_tax", tax_amt)
     elif new_position == TAX_LUXURY_POSITION:
-        tax_amt = round(100.0 * (1 + float(econ.get("tax_multiplier", 0.15))), 2)
+        tax_amt, _, _ = apply_luxury_tax(pre_resolution_player, econ)
         game_state = record_tax_payment(game_state, player_id, "luxury_tax", tax_amt)
     elif new_position == TAX_SUPER_POSITION:
-        tax_amt = round(200.0 * (1 + float(econ.get("tax_multiplier", 0.15))), 2)
+        tax_amt, _, _ = apply_super_tax(pre_resolution_player, econ)
         game_state = record_tax_payment(game_state, player_id, "super_tax", tax_amt)
 
     for entry in land_logs:

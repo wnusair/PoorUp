@@ -32,6 +32,8 @@ const bottomRow = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 // Left col inner: T→B, 1 up to 10
 const leftColInner = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
+const BOARD_INSET = 10;
+
 // Cell sizing
 const CORNER = 72;
 const EDGE_W = 46;  // width of each inner cell on the top row (17 cells)
@@ -48,56 +50,101 @@ const innerH = LEFT_INNER * EDGE_H;       // 600px — height for inner area
 const totalW = CORNER + innerW + CORNER;  // 926px
 const totalH = CORNER + innerH + CORNER;  // 744px
 
-// Bottom row and right col fill the same inner dimensions at different cell sizes
-const bottomCellW = innerW / BOTTOM_INNER; // 97.75px each
-const rightCellH = innerH / RIGHT_INNER;   // 66.67px each
+function buildBoardMetrics(containerWidth, containerHeight) {
+  const availableWidth = Math.max(320, containerWidth - (BOARD_INSET * 2));
+  const availableHeight = Math.max(260, containerHeight - (BOARD_INSET * 2));
+  const preferredCorner = Math.min(
+    availableWidth / (totalW / CORNER),
+    availableHeight / (totalH / CORNER),
+  );
+  const corner = Math.max(36, preferredCorner);
+  const boardWidth = availableWidth;
+  const boardHeight = availableHeight;
+  const responsiveInnerWidth = Math.max(1, boardWidth - (corner * 2));
+  const responsiveInnerHeight = Math.max(1, boardHeight - (corner * 2));
+  const tokenSize = Math.max(
+    22,
+    Math.min(40, Math.min(corner, responsiveInnerWidth / TOP_INNER, responsiveInnerHeight / LEFT_INNER) * 0.48),
+  );
 
-const TOKEN_SIZE = 30; // px, unscaled
+  return {
+    inset: BOARD_INSET,
+    boardWidth,
+    boardHeight,
+    corner,
+    innerWidth: responsiveInnerWidth,
+    innerHeight: responsiveInnerHeight,
+    topCellW: responsiveInnerWidth / TOP_INNER,
+    bottomCellW: responsiveInnerWidth / BOTTOM_INNER,
+    leftCellH: responsiveInnerHeight / LEFT_INNER,
+    rightCellH: responsiveInnerHeight / RIGHT_INNER,
+    tokenSize,
+  };
+}
 
 /**
- * Returns the center pixel coordinate of a board space on the unscaled board.
+ * Returns the center pixel coordinate of a board space on the responsive board.
  */
-function getSpaceCenter(pos) {
+function getSpaceCenter(pos, metrics) {
+  const {
+    corner,
+    boardWidth,
+    boardHeight,
+    topCellW,
+    bottomCellW,
+    leftCellH,
+    rightCellH,
+  } = metrics;
+
   // TL corner: 0
-  if (pos === 0) return { x: CORNER / 2, y: CORNER / 2 };
+  if (pos === 0) return { x: corner / 2, y: corner / 2 };
   // Left col: 1–10 (top→bottom)
   if (pos >= 1 && pos <= 10)
-    return { x: CORNER / 2, y: CORNER + (pos - 1) * EDGE_H + EDGE_H / 2 };
+    return { x: corner / 2, y: corner + (pos - 1) * leftCellH + leftCellH / 2 };
   // BL corner: 11
-  if (pos === 11) return { x: CORNER / 2, y: totalH - CORNER / 2 };
+  if (pos === 11) return { x: corner / 2, y: boardHeight - corner / 2 };
   // Bottom row inner: 12–19 (left→right)
   if (pos >= 12 && pos <= 19)
-    return { x: CORNER + (pos - 12) * bottomCellW + bottomCellW / 2, y: totalH - CORNER / 2 };
+    return { x: corner + (pos - 12) * bottomCellW + bottomCellW / 2, y: boardHeight - corner / 2 };
   // BR corner: 20
-  if (pos === 20) return { x: totalW - CORNER / 2, y: totalH - CORNER / 2 };
+  if (pos === 20) return { x: boardWidth - corner / 2, y: boardHeight - corner / 2 };
   // Right col: 21–29 (29 is near top, 21 is near bottom)
   if (pos >= 21 && pos <= 29) {
     const rowIndex = 29 - pos; // 0 for pos=29, 8 for pos=21
-    return { x: totalW - CORNER / 2, y: CORNER + rowIndex * rightCellH + rightCellH / 2 };
+    return { x: boardWidth - corner / 2, y: corner + rowIndex * rightCellH + rightCellH / 2 };
   }
   // TR corner: 30
-  if (pos === 30) return { x: totalW - CORNER / 2, y: CORNER / 2 };
+  if (pos === 30) return { x: boardWidth - corner / 2, y: corner / 2 };
   // Top row inner: 31–47 (DOM left→right order: 47, 46, ..., 31)
   if (pos >= 31 && pos <= 47) {
     const cellIndex = 47 - pos; // 0 for pos=47 (leftmost inner), 16 for pos=31
-    return { x: CORNER + cellIndex * EDGE_W + EDGE_W / 2, y: CORNER / 2 };
+    return { x: corner + cellIndex * topCellW + topCellW / 2, y: corner / 2 };
   }
   return { x: 0, y: 0 };
 }
 
 export default function GameBoard({ players = [], properties = {}, onSpaceClick }) {
   const containerRef = useRef(null);
-  const [scale, setScale] = useState(1);
+  const [boardSize, setBoardSize] = useState({
+    width: totalW + (BOARD_INSET * 2),
+    height: totalH + (BOARD_INSET * 2),
+  });
   const { playerAnimPositions, movingPlayerId } = useGameStore();
+
+  const metrics = buildBoardMetrics(boardSize.width, boardSize.height);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const compute = () => {
-      const w = el.clientWidth;
-      const h = el.clientHeight;
-      if (!w || !h) return;
-      setScale(Math.min(w / totalW, h / totalH));
+      const width = el.clientWidth;
+      const height = el.clientHeight;
+      if (!width || !height) return;
+      setBoardSize((current) => (
+        current.width === width && current.height === height
+          ? current
+          : { width, height }
+      ));
     };
     compute();
     const ro = new ResizeObserver(compute);
@@ -144,16 +191,16 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
   const overlayTokens = players
     .filter((p) => !p.bankrupt)
     .map((player) => {
-      const pos = playerAnimPositions[player.id] ?? player.position;
+      const pos = playerAnimPositions[player.id] ?? player.position ?? 0;
 
       // Count players sharing this space to stagger tokens
       const siblings = players.filter(
-        (p) => !p.bankrupt && (playerAnimPositions[p.id] ?? p.position) === pos
+        (p) => !p.bankrupt && (playerAnimPositions[p.id] ?? p.position ?? 0) === pos
       );
       const offsetIndex = siblings.findIndex((p) => p.id === player.id);
-      const offset = offsetIndex * 5;
+      const offset = offsetIndex * Math.max(4, metrics.tokenSize * 0.18);
 
-      const { x, y } = getSpaceCenter(pos);
+      const { x, y } = getSpaceCenter(pos, metrics);
       const isMoving = player.id === movingPlayerId;
       const color = player.color_hex || '#888';
       const textColor = needsDarkText(color) ? '#111' : '#fff';
@@ -164,10 +211,10 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
           title={player.username}
           style={{
             position: 'absolute',
-            width: `${TOKEN_SIZE}px`,
-            height: `${TOKEN_SIZE}px`,
-            left: `${x - TOKEN_SIZE / 2 - offset}px`,
-            top: `${y - TOKEN_SIZE / 2 - offset}px`,
+            width: `${metrics.tokenSize}px`,
+            height: `${metrics.tokenSize}px`,
+            left: `${x - metrics.tokenSize / 2 - offset}px`,
+            top: `${y - metrics.tokenSize / 2 - offset}px`,
             // Smooth glide between spaces — matches the STEP_MS in useSocket
             transition: 'left 0.13s ease-out, top 0.13s ease-out, box-shadow 0.1s, transform 0.1s',
             backgroundColor: color,
@@ -177,7 +224,7 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: '12px',
+            fontSize: `${Math.max(10, metrics.tokenSize * 0.38)}px`,
             fontWeight: 'bold',
             userSelect: 'none',
             zIndex: 20 + offsetIndex,
@@ -207,21 +254,20 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
     });
 
   return (
-    <div ref={containerRef} className="w-full h-full flex items-center justify-center">
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden">
       <div
-        className="relative select-none"
+        className="absolute select-none"
         style={{
-          width: `${totalW}px`,
-          height: `${totalH}px`,
-          flexShrink: 0,
-          transform: `scale(${scale})`,
-          transformOrigin: 'center center',
+          left: `${metrics.inset}px`,
+          top: `${metrics.inset}px`,
+          width: `${metrics.boardWidth}px`,
+          height: `${metrics.boardHeight}px`,
         }}
       >
         {/* Top row: corners 0 (TL) and 30 (TR), inner positions 47→31 */}
         <div
           className="absolute flex"
-          style={{ top: 0, left: 0, width: `${totalW}px`, height: `${CORNER}px` }}
+          style={{ top: 0, left: 0, width: `${metrics.boardWidth}px`, height: `${metrics.corner}px` }}
         >
           {topRow.map((pos) => {
             const isC = CORNER_POSITIONS.has(pos);
@@ -229,8 +275,8 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
               <div
                 key={pos}
                 style={{
-                  width: isC ? `${CORNER}px` : `${EDGE_W}px`,
-                  height: `${CORNER}px`,
+                  width: isC ? `${metrics.corner}px` : `${metrics.topCellW}px`,
+                  height: `${metrics.corner}px`,
                   flexShrink: 0,
                 }}
               >
@@ -243,7 +289,7 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
         {/* Bottom row: corners 11 (BL) and 20 (BR), inner positions 12→19 */}
         <div
           className="absolute flex"
-          style={{ bottom: 0, left: 0, width: `${totalW}px`, height: `${CORNER}px` }}
+          style={{ bottom: 0, left: 0, width: `${metrics.boardWidth}px`, height: `${metrics.corner}px` }}
         >
           {bottomRow.map((pos) => {
             const isC = CORNER_POSITIONS.has(pos);
@@ -251,8 +297,8 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
               <div
                 key={pos}
                 style={{
-                  width: isC ? `${CORNER}px` : `${bottomCellW}px`,
-                  height: `${CORNER}px`,
+                  width: isC ? `${metrics.corner}px` : `${metrics.bottomCellW}px`,
+                  height: `${metrics.corner}px`,
                   flexShrink: 0,
                 }}
               >
@@ -266,16 +312,16 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
         <div
           className="absolute flex flex-col"
           style={{
-            top: `${CORNER}px`,
+            top: `${metrics.corner}px`,
             left: 0,
-            width: `${CORNER}px`,
-            height: `${innerH}px`,
+            width: `${metrics.corner}px`,
+            height: `${metrics.innerHeight}px`,
           }}
         >
           {leftColInner.map((pos) => (
             <div
               key={pos}
-              style={{ width: `${CORNER}px`, height: `${EDGE_H}px`, flexShrink: 0 }}
+              style={{ width: `${metrics.corner}px`, height: `${metrics.leftCellH}px`, flexShrink: 0 }}
             >
               {renderSpace(pos, 'left', false)}
             </div>
@@ -286,16 +332,16 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
         <div
           className="absolute flex flex-col"
           style={{
-            top: `${CORNER}px`,
+            top: `${metrics.corner}px`,
             right: 0,
-            width: `${CORNER}px`,
-            height: `${innerH}px`,
+            width: `${metrics.corner}px`,
+            height: `${metrics.innerHeight}px`,
           }}
         >
           {rightColInner.map((pos) => (
             <div
               key={pos}
-              style={{ width: `${CORNER}px`, height: `${rightCellH}px`, flexShrink: 0 }}
+              style={{ width: `${metrics.corner}px`, height: `${metrics.rightCellH}px`, flexShrink: 0 }}
             >
               {renderSpace(pos, 'right', false)}
             </div>
@@ -306,19 +352,24 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
         <div
           className="absolute flex items-center justify-center"
           style={{
-            top: `${CORNER}px`,
-            left: `${CORNER}px`,
-            right: `${CORNER}px`,
-            bottom: `${CORNER}px`,
+            top: `${metrics.corner}px`,
+            left: `${metrics.corner}px`,
+            right: `${metrics.corner}px`,
+            bottom: `${metrics.corner}px`,
             background: 'radial-gradient(ellipse at center, #1a1f2e 0%, #0f1319 100%)',
           }}
         >
           <div className="text-center">
-            <div className="text-4xl font-black tracking-wider text-transparent bg-clip-text
-                            bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500">
+            <div
+              className="text-transparent bg-clip-text bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 font-black tracking-wider"
+              style={{ fontSize: `${Math.max(32, Math.min(60, metrics.innerWidth * 0.08))}px` }}
+            >
               POOR<span className="text-white">UP</span>
             </div>
-            <div className="text-xs text-gray-600 mt-1 tracking-widest uppercase">
+            <div
+              className="mt-1 text-gray-600 tracking-widest uppercase"
+              style={{ fontSize: `${Math.max(10, Math.min(16, metrics.innerWidth * 0.018))}px` }}
+            >
               Goon to Victory
             </div>
           </div>

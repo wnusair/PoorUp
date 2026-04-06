@@ -216,8 +216,8 @@ export default function SettingsPanel({ settings = {}, onChange, readOnly = fals
         </div>
         <div className="space-y-3">
           <Toggle label="Welfare System" settingKey="welfare_system_enabled" description="Pay eligible players at the start of each round when the treasury can afford it" />
-          <Toggle label="Income Tax on Pass GO" settingKey="income_tax_on_pass_go" description="Collect GO salary, then immediately tax it based on current tax rules" />
-          <Toggle label="Turn Tax" settingKey="tax_every_turn" description="Charge every player a flat tax at the end of each turn" />
+          <Toggle label="Income Tax on Pass GO" settingKey="income_tax_on_pass_go" description="Collect GO salary, then charge the current percentage-based income tax on cash" />
+          <Toggle label="Turn Tax" settingKey="tax_every_turn" description="Charge every player a small percentage-based tax at the end of each turn" />
         </div>
       </div>
     </div>

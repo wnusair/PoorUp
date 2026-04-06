@@ -3,6 +3,7 @@ import { useGameStore } from '../../hooks/useGameState';
 import { GOVERNMENT_TYPES } from '../../utils/constants';
 import {
   TAX_CATEGORIES,
+  buildTaxRuleRows,
   buildBudgetHistorySeries,
   buildCurrentNetWorthRows,
   buildPlayerFinanceSeries,
@@ -334,37 +335,6 @@ function PlayerNetWorthChart({ data }) {
       </div>
     </div>
   );
-}
-
-function buildTaxRuleRows(economy, settings) {
-  const taxMultiplier = numberValue(economy?.tax_multiplier, 0);
-  return [
-    {
-      label: 'Income Tax',
-      enabled: true,
-      formula: `Greater of GO salary or current cash × ${taxMultiplier.toFixed(2)}`,
-    },
-    {
-      label: 'Property Tax',
-      enabled: true,
-      formula: `1% of unmortgaged property value × ${taxMultiplier.toFixed(2)} every ${numberValue(settings?.property_tax_every_n_rounds, 5)} rounds`,
-    },
-    {
-      label: 'Turn Tax',
-      enabled: Boolean(settings?.tax_every_turn),
-      formula: `$50 × ${taxMultiplier.toFixed(2)} each turn when enabled`,
-    },
-    {
-      label: 'Luxury Tax',
-      enabled: true,
-      formula: `${formatExactMoney(100 * (1 + taxMultiplier))} on the Luxury Tax space`,
-    },
-    {
-      label: 'Super Tax',
-      enabled: true,
-      formula: `${formatExactMoney(200 * (1 + taxMultiplier))} on the Super Tax space`,
-    },
-  ];
 }
 
 function OverviewTab({ economy, settings, welfareProjection, taxStats, governmentLabel }) {
