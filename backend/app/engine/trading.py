@@ -4,6 +4,7 @@ from typing import Any
 
 from app import db
 from app.engine.analytics import record_lobbying_contribution
+from app.engine.deals import accept_deal, create_deal, normalize_deal_request_payload, serialize_deal
 from app.engine.debt import credit_player_with_debt_settlement, spend_player_balance
 from app.engine.social import property_private_actions_locked
 from app.models.policy import (
@@ -112,7 +113,58 @@ def normalize_stored_lobby_pledges(raw_pledges: Any) -> list[dict]:
     return normalized
 
 
-def normalize_trade_request_payload(match_id: int, data: dict | None) -> tuple[dict | None, str | None]:
+def _attached_deal_immediate_commitment(deal_drafts: list[dict] | None, player_id: int) -> float:
+    total_commitment = 0.0
+    normalized_player_id = int(player_id or 0)
+    for draft in deal_drafts or []:
+        for clause in draft.get("clauses") or []:
+            if clause.get("type") != "development_investment":
+                continue
+            if int(clause.get("grantor_id", 0) or 0) != normalized_player_id:
+                continue
+            total_commitment += round_money((clause.get("config") or {}).get("escrow_amount", 0))
+    return round_money(total_commitment)
+
+
+def normalize_trade_deal_drafts(
+    match_id: int,
+    initiator_id: int,
+    receiver_id: int,
+    game_state: dict,
+    raw_deal_drafts: Any,
+) -> tuple[list[dict], str | None]:
+    if raw_deal_drafts is None:
+        return [], None
+
+    draft_items = raw_deal_drafts if isinstance(raw_deal_drafts, list) else [raw_deal_drafts]
+    normalized_drafts = []
+    for index, raw_draft in enumerate(draft_items, start=1):
+        if not isinstance(raw_draft, dict):
+            continue
+
+        draft_payload = dict(raw_draft)
+        draft_payload.setdefault("counterparty_id", receiver_id)
+        normalized_draft, error = normalize_deal_request_payload(
+            match_id,
+            initiator_id,
+            game_state,
+            draft_payload,
+        )
+        if error:
+            return [], f"Deal draft {index}: {error}"
+        if int(normalized_draft.get("counterparty_id", 0) or 0) != int(receiver_id or 0):
+            return [], f"Deal draft {index}: counterparty must match the trade receiver."
+        normalized_drafts.append(normalized_draft)
+
+    return normalized_drafts, None
+
+
+def normalize_trade_request_payload(
+    match_id: int,
+    initiator_id: int,
+    game_state: dict,
+    data: dict | None,
+) -> tuple[dict | None, str | None]:
     data = data or {}
 
     try:
@@ -134,6 +186,16 @@ def normalize_trade_request_payload(match_id: int, data: dict | None) -> tuple[d
     if error:
         return None, error
 
+    included_deal_drafts, error = normalize_trade_deal_drafts(
+        match_id,
+        initiator_id,
+        receiver_id,
+        game_state,
+        data.get("included_deal_drafts", data.get("deal_drafts")),
+    )
+    if error:
+        return None, error
+
     return {
         "receiver_id": receiver_id,
         "offered_money": round_money(data.get("offered_money", data.get("offer_money", 0))),
@@ -142,6 +204,7 @@ def normalize_trade_request_payload(match_id: int, data: dict | None) -> tuple[d
         "requested_props": normalize_trade_property_ids(data.get("requested_props", data.get("request_properties", []))),
         "offered_lobby_pledges": offered_lobby_pledges,
         "requested_lobby_pledges": requested_lobby_pledges,
+        "included_deal_drafts": included_deal_drafts,
     }, None
 
 
@@ -166,19 +229,30 @@ def validate_trade_proposal(game_state: dict, initiator_id: int, payload: dict) 
     settings = game_state.get("settings", {})
     econ = game_state.get("econ", {})
     has_lobby_pledges = bool(payload.get("offered_lobby_pledges") or payload.get("requested_lobby_pledges"))
+    has_deal_drafts = bool(payload.get("included_deal_drafts"))
     if has_lobby_pledges and (
         not settings.get("lobbying_enabled", True)
         or econ.get("gov_type") == "minarchism"
     ):
         return "Lobbying pledges are unavailable in the current government."
+    if has_deal_drafts and not settings.get("deals_enabled", True):
+        return "Deals are disabled in the current match."
 
-    offered_commitment = round_money(payload.get("offered_money", 0) + sum_lobby_pledges(payload.get("offered_lobby_pledges")))
-    requested_commitment = round_money(payload.get("requested_money", 0) + sum_lobby_pledges(payload.get("requested_lobby_pledges")))
+    offered_commitment = round_money(
+        payload.get("offered_money", 0)
+        + sum_lobby_pledges(payload.get("offered_lobby_pledges"))
+        + _attached_deal_immediate_commitment(payload.get("included_deal_drafts"), initiator_id)
+    )
+    requested_commitment = round_money(
+        payload.get("requested_money", 0)
+        + sum_lobby_pledges(payload.get("requested_lobby_pledges"))
+        + _attached_deal_immediate_commitment(payload.get("included_deal_drafts"), receiver_id)
+    )
 
     if offered_commitment > max(0.0, round_money(initiator.get("balance", 0))):
-        return "Your offered cash and lobbying pledges exceed your balance."
+        return "Your offered cash, lobbying pledges, and bundled deal escrows exceed your balance."
     if requested_commitment > max(0.0, round_money(receiver.get("balance", 0))):
-        return "The requested player cannot currently cover the requested cash and lobbying pledges."
+        return "The requested player cannot currently cover the requested cash, lobbying pledges, and bundled deal escrows."
 
     properties_by_id = {
         int(prop.get("id")): prop
@@ -266,17 +340,18 @@ def _apply_lobby_pledges(game_state: dict, payer_id: int, pledges: list[dict], m
     return next_state, pledge_results
 
 
-def apply_trade_acceptance(game_state: dict, trade, match_id: int) -> tuple[dict, dict | None, str | None]:
+def apply_trade_acceptance(game_state: dict, trade, match_id: int) -> tuple[dict, dict | None, list[dict], str | None]:
     next_state = dict(game_state)
     initiator = get_player_by_id(next_state, trade.initiator_id)
     receiver = get_player_by_id(next_state, trade.receiver_id)
     if initiator is None or receiver is None:
-        return next_state, None, "Trade participants are no longer available."
+        return next_state, None, [], "Trade participants are no longer available."
 
     offered_money = round_money(getattr(trade, "offered_money", 0))
     requested_money = round_money(getattr(trade, "requested_money", 0))
     offered_lobby_pledges = normalize_stored_lobby_pledges(getattr(trade, "offered_lobby_pledges", []) or [])
     requested_lobby_pledges = normalize_stored_lobby_pledges(getattr(trade, "requested_lobby_pledges", []) or [])
+    included_deal_drafts = list(getattr(trade, "included_deal_drafts", []) or [])
 
     settings = next_state.get("settings", {})
     econ = next_state.get("econ", {})
@@ -285,28 +360,38 @@ def apply_trade_acceptance(game_state: dict, trade, match_id: int) -> tuple[dict
         not settings.get("lobbying_enabled", True)
         or econ.get("gov_type") == "minarchism"
     ):
-        return next_state, None, "This trade includes lobbying pledges, but lobbying is currently unavailable."
+        return next_state, None, [], "This trade includes lobbying pledges, but lobbying is currently unavailable."
+    if included_deal_drafts and not settings.get("deals_enabled", True):
+        return next_state, None, [], "This trade includes bundled deals, but deals are currently disabled."
 
     initiator_available_cash = max(0.0, round_money(initiator.get("balance", 0)))
     receiver_available_cash = max(0.0, round_money(receiver.get("balance", 0)))
     if offered_money > initiator_available_cash:
-        return next_state, None, "The proposer no longer has enough cash for this trade."
+        return next_state, None, [], "The proposer no longer has enough cash for this trade."
     if requested_money > receiver_available_cash:
-        return next_state, None, "The receiving player no longer has enough cash for this trade."
+        return next_state, None, [], "The receiving player no longer has enough cash for this trade."
 
     initiator_post_cash = round_money(initiator_available_cash - offered_money + requested_money)
     receiver_post_cash = round_money(receiver_available_cash + offered_money - requested_money)
-    if sum_lobby_pledges(offered_lobby_pledges) > max(0.0, initiator_post_cash):
-        return next_state, None, "The proposer can no longer fund the promised lobbying pledges."
-    if sum_lobby_pledges(requested_lobby_pledges) > max(0.0, receiver_post_cash):
-        return next_state, None, "The receiving player can no longer fund the requested lobbying pledges."
+    initiator_reserved_cash = round_money(
+        sum_lobby_pledges(offered_lobby_pledges)
+        + _attached_deal_immediate_commitment(included_deal_drafts, trade.initiator_id)
+    )
+    receiver_reserved_cash = round_money(
+        sum_lobby_pledges(requested_lobby_pledges)
+        + _attached_deal_immediate_commitment(included_deal_drafts, trade.receiver_id)
+    )
+    if initiator_reserved_cash > max(0.0, initiator_post_cash):
+        return next_state, None, [], "The proposer can no longer fund the promised lobbying pledges and bundled deal escrows."
+    if receiver_reserved_cash > max(0.0, receiver_post_cash):
+        return next_state, None, [], "The receiving player can no longer fund the requested lobbying pledges and bundled deal escrows."
 
     for prop_id in (getattr(trade, "offered_props", []) or []):
         if property_private_actions_locked(next_state, int(prop_id)):
-            return next_state, None, "A unionized property can no longer be traded."
+            return next_state, None, [], "A unionized property can no longer be traded."
     for prop_id in (getattr(trade, "requested_props", []) or []):
         if property_private_actions_locked(next_state, int(prop_id)):
-            return next_state, None, "A unionized property can no longer be traded."
+            return next_state, None, [], "A unionized property can no longer be traded."
 
     if offered_money > 0:
         next_state, _ = spend_player_balance(next_state, trade.initiator_id, offered_money)
@@ -326,6 +411,41 @@ def apply_trade_acceptance(game_state: dict, trade, match_id: int) -> tuple[dict
         updated_props.append(next_prop)
     next_state = {**next_state, "properties": updated_props}
 
+    created_deals = []
+    if included_deal_drafts:
+        player_lookup = {
+            int(player.get("id")): player
+            for player in next_state.get("players", [])
+            if player.get("id") is not None
+        }
+        for stored_draft in included_deal_drafts:
+            normalized_draft, error = normalize_deal_request_payload(
+                match_id,
+                trade.initiator_id,
+                next_state,
+                stored_draft,
+            )
+            if error:
+                db.session.rollback()
+                return game_state, None, [], f"Bundled deal could not be activated: {error}"
+
+            bundled_deal = create_deal(
+                match_id,
+                trade.initiator_id,
+                normalized_draft,
+                commit=False,
+            )
+            if bundled_deal is None:
+                db.session.rollback()
+                return game_state, None, [], "Failed to create a bundled deal."
+
+            next_state, error = accept_deal(bundled_deal, next_state, commit=False)
+            if error:
+                db.session.rollback()
+                return game_state, None, [], f"Bundled deal could not be activated: {error}"
+
+            created_deals.append(serialize_deal(bundled_deal, player_lookup))
+
     next_state, initiator_pledge_results = _apply_lobby_pledges(
         next_state,
         trade.initiator_id,
@@ -342,4 +462,4 @@ def apply_trade_acceptance(game_state: dict, trade, match_id: int) -> tuple[dict
     return next_state, {
         "initiator": initiator_pledge_results,
         "receiver": receiver_pledge_results,
-    }, None
+    }, created_deals, None

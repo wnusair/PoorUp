@@ -84,6 +84,7 @@ export function getPropertyTaxTiming(currentRound, settings) {
   const dueThisRound = roundsUntilDue === 0;
 
   return {
+    interval,
     dueThisRound,
     nextRound,
     roundsUntilDue,
@@ -98,13 +99,21 @@ export function buildPlayerTaxSchedule({ player, properties, economy, settings, 
   const effectiveRate = getEffectiveTaxRate(economy);
   const propertyTiming = getPropertyTaxTiming(currentRound, settings);
   const turnTaxEnabled = Boolean(settings?.tax_every_turn);
+  const incomeTaxAmount = calculateIncomeTaxEstimate(balance, economy);
+  const propertyTaxAmount = calculatePropertyTaxEstimate(properties, economy);
+  const turnTaxAmount = turnTaxEnabled ? calculateTurnTaxEstimate(balance, economy) : 0;
+  const luxuryTaxAmount = calculateLuxuryTaxEstimate(balance, economy);
+  const superTaxAmount = calculateSuperTaxEstimate(balance, economy);
+  const incomeTaxOnRotation = Boolean(settings?.income_tax_on_pass_go);
 
   return [
     {
       id: 'income_tax',
       label: 'Income Tax',
       enabled: true,
-      amount: calculateIncomeTaxEstimate(balance, economy),
+      amount: incomeTaxAmount,
+      perTurnAmount: 0,
+      perRotationAmount: incomeTaxOnRotation ? incomeTaxAmount : 0,
       when: settings?.income_tax_on_pass_go
         ? 'When you pass GO and when you land on Income Tax.'
         : 'When you land on Income Tax.',
@@ -114,17 +123,22 @@ export function buildPlayerTaxSchedule({ player, properties, economy, settings, 
       id: 'property_tax',
       label: 'Property Tax',
       enabled: true,
-      amount: calculatePropertyTaxEstimate(properties, economy),
+      amount: propertyTaxAmount,
+      perTurnAmount: propertyTiming.interval === 1 ? propertyTaxAmount : 0,
+      perRotationAmount: 0,
       when: propertyTiming.when,
       detail: 'Based on unmortgaged property value. This is the only tax that can push you into debt.',
       dueThisRound: propertyTiming.dueThisRound,
       nextRound: propertyTiming.nextRound,
+      intervalRounds: propertyTiming.interval,
     },
     {
       id: 'turn_tax',
       label: 'Turn Tax',
       enabled: turnTaxEnabled,
-      amount: turnTaxEnabled ? calculateTurnTaxEstimate(balance, economy) : 0,
+      amount: turnTaxAmount,
+      perTurnAmount: turnTaxAmount,
+      perRotationAmount: 0,
       when: turnTaxEnabled ? 'At the end of every turn.' : 'Disabled in this lobby.',
       detail: turnTaxEnabled
         ? `${formatTaxRate(effectiveRate * TURN_TAX_RATE_SHARE)} of your current cash.`
@@ -134,7 +148,9 @@ export function buildPlayerTaxSchedule({ player, properties, economy, settings, 
       id: 'luxury_tax',
       label: 'Luxury Tax',
       enabled: true,
-      amount: calculateLuxuryTaxEstimate(balance, economy),
+      amount: luxuryTaxAmount,
+      perTurnAmount: 0,
+      perRotationAmount: 0,
       when: 'When you land on Luxury Tax.',
       detail: `${formatTaxRate(effectiveRate * LUXURY_TAX_RATE_SHARE)} of your current cash.`,
     },
@@ -142,7 +158,9 @@ export function buildPlayerTaxSchedule({ player, properties, economy, settings, 
       id: 'super_tax',
       label: 'Super Tax',
       enabled: true,
-      amount: calculateSuperTaxEstimate(balance, economy),
+      amount: superTaxAmount,
+      perTurnAmount: 0,
+      perRotationAmount: 0,
       when: 'When you land on Super Tax.',
       detail: `${formatTaxRate(effectiveRate * SUPER_TAX_RATE_SHARE)} of your current cash.`,
     },

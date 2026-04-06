@@ -2,6 +2,7 @@
 Economy engine — all financial formulas for PoorUp.
 All functions operate on plain dict game-state (loaded from Redis).
 """
+import math
 import random
 from typing import Any
 
@@ -13,6 +14,75 @@ STANDARD_MAX_DEVELOPMENT_LEVEL = 5
 MINARCHISM_BASE_HOUSE_LEVEL = 4
 MINARCHISM_EXTRA_RENT_INCREMENT = 8.0
 MINARCHISM_PROGRESSIVE_COST_STEP = 0.35
+MIN_FISCAL_BASELINE_PER_PLAYER = 250.0
+
+FISCAL_INFLATION_FACTORS = {
+    "welfare_distribution": {
+        "liberal_democracy": 0.0125,
+        "social_democracy": 0.0105,
+        "default": 0.0115,
+    },
+    "economic_stimulus": {
+        "liberal_democracy": 0.0145,
+        "social_democracy": 0.0125,
+        "default": 0.0135,
+    },
+    "treasury_injection": {
+        "liberal_democracy": 0.0085,
+        "social_democracy": 0.0065,
+        "default": 0.0075,
+    },
+}
+
+FISCAL_INFLATION_CAPS = {
+    "welfare_distribution": 0.02,
+    "economic_stimulus": 0.025,
+    "treasury_injection": 0.015,
+}
+
+
+def apply_fiscal_inflation(
+    econ: dict,
+    amount: float,
+    settings: dict | None = None,
+    *,
+    active_player_count: int = 1,
+    category: str = "welfare_distribution",
+) -> tuple[dict, float]:
+    amount = max(0.0, float(amount or 0))
+    next_econ = dict(econ)
+    if amount <= 0:
+        return next_econ, 0.0
+
+    factor_table = FISCAL_INFLATION_FACTORS.get(category) or FISCAL_INFLATION_FACTORS["welfare_distribution"]
+    government_type = resolve_government_type(econ=next_econ, settings=settings)
+    factor = float(factor_table.get(government_type, factor_table.get("default", 0.0)) or 0.0)
+    if factor <= 0:
+        return next_econ, 0.0
+
+    try:
+        go_salary = float((settings or {}).get("go_salary", 200) or 200)
+    except (TypeError, ValueError):
+        go_salary = 200.0
+
+    normalized_player_count = max(1, int(active_player_count or 1))
+    baseline = max(
+        MIN_FISCAL_BASELINE_PER_PLAYER * normalized_player_count,
+        max(100.0, go_salary) * normalized_player_count,
+    )
+    spending_pressure = math.log1p(amount / baseline)
+    inflation_delta = round(
+        min(float(FISCAL_INFLATION_CAPS.get(category, 0.02) or 0.02), spending_pressure * factor),
+        4,
+    )
+    if inflation_delta <= 0:
+        return next_econ, 0.0
+
+    next_econ["inflation_rate"] = round(
+        min(2.0, float(next_econ.get("inflation_rate", 0.03) or 0.03) + inflation_delta),
+        4,
+    )
+    return next_econ, inflation_delta
 
 
 def resolve_government_type(
@@ -367,6 +437,8 @@ def pay_welfare(players: list[dict], econ: dict, settings: dict | None = None) -
     distribution = build_welfare_distribution(players, econ, settings or {})
     if not distribution.get("successful", False):
         econ = dict(econ)
+        distribution = dict(distribution)
+        distribution["inflation_delta"] = 0.0
         if distribution.get("reason") == "Treasury cannot cover the next welfare payment.":
             econ["stability"] = round(max(0.0, float(econ.get("stability", 0.5)) - 0.10), 4)
         return players, econ, distribution
@@ -386,8 +458,18 @@ def pay_welfare(players: list[dict], econ: dict, settings: dict | None = None) -
         if welfare_amount > 0:
             p["balance"] = round(float(p["balance"]) + welfare_amount, 2)
         updated.append(p)
+
+    active_player_count = sum(1 for player in players if not player.get("is_bankrupt", False))
+    econ, inflation_delta = apply_fiscal_inflation(
+        econ,
+        total_cost,
+        settings,
+        active_player_count=active_player_count,
+        category="welfare_distribution",
+    )
     distribution = dict(distribution)
     distribution["treasury_after"] = round(float(econ.get("treasury_balance", 0)), 2)
+    distribution["inflation_delta"] = inflation_delta
     return updated, econ, distribution
 
 

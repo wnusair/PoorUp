@@ -4,10 +4,10 @@ import LogEntry from './LogEntry';
 import { LOG_EVENT_COLORS } from '../../utils/constants';
 
 const EVENT_TYPE_GROUPS = [
-  { label: 'Movement', types: ['dice_roll', 'move'] },
+  { label: 'Movement', types: ['dice_roll', 'move', 'turn_timeout'] },
   { label: 'Finance', types: ['rent_collected', 'income_tax', 'luxury_tax', 'super_tax', 'turn_tax', 'property_tax', 'welfare_paid', 'welfare_failed'] },
   { label: 'Property', types: ['property_purchased', 'auction_won'] },
-  { label: 'Social', types: ['trade_proposed', 'trade_completed', 'trade_rejected', 'deal_proposed', 'deal_countered', 'deal_accepted', 'deal_rejected', 'deal_cancelled', 'deal_expired', 'deal_immunity_applied', 'deal_discount_applied', 'deal_investment_spent', 'deal_profit_paid', 'lobby_pending', 'lobby_success', 'lobby_failed'] },
+  { label: 'Social', types: ['trade_proposed', 'trade_completed', 'trade_rejected', 'deal_proposed', 'deal_countered', 'deal_accepted', 'deal_rejected', 'deal_cancelled', 'deal_termination_requested', 'deal_expired', 'deal_immunity_applied', 'deal_discount_applied', 'deal_investment_spent', 'deal_profit_paid', 'lobby_pending', 'lobby_success', 'lobby_failed'] },
   { label: 'Events', types: ['uprising', 'hyper_inflation', 'bankruptcy', 'chance_card', 'community_chest', 'jail_sent', 'jail_released'] },
 ];
 

@@ -1456,6 +1456,251 @@ def _mirror_trade_terms(action: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _project_trade_candidate_state(
+    game_state: dict,
+    proposer_id: int,
+    receiver_id: int,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    offered_prop_ids = set()
+    requested_prop_ids = set()
+    for values, bucket in (
+        (candidate.get("offered_props"), offered_prop_ids),
+        (candidate.get("requested_props"), requested_prop_ids),
+    ):
+        for value in values or []:
+            try:
+                prop_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if prop_id > 0:
+                bucket.add(prop_id)
+
+    offered_money = float(candidate.get("offered_money", 0) or 0)
+    requested_money = float(candidate.get("requested_money", 0) or 0)
+
+    next_players = []
+    for entry in game_state.get("players", []):
+        next_entry = dict(entry)
+        player_id = int(next_entry.get("id") or 0)
+        balance = float(next_entry.get("balance", 0) or 0)
+        if player_id == int(proposer_id or 0):
+            balance = balance - offered_money + requested_money
+        elif player_id == int(receiver_id or 0):
+            balance = balance + offered_money - requested_money
+        next_entry["balance"] = round(balance, 2)
+        next_players.append(next_entry)
+
+    next_properties = []
+    for prop in game_state.get("properties", []):
+        next_prop = dict(prop)
+        prop_id = int(next_prop.get("id") or 0)
+        if prop_id in offered_prop_ids:
+            next_prop["owner_id"] = receiver_id
+        elif prop_id in requested_prop_ids:
+            next_prop["owner_id"] = proposer_id
+        next_properties.append(next_prop)
+
+    return {
+        **game_state,
+        "players": next_players,
+        "properties": next_properties,
+    }
+
+
+def _score_bundled_deal_drafts_for_player(
+    player: dict,
+    bundled_deal_drafts: list[dict] | None,
+    projected_state: dict,
+    profile: dict[str, Any],
+) -> float:
+    valid_drafts = [draft for draft in (bundled_deal_drafts or []) if isinstance(draft, dict)]
+    if not valid_drafts:
+        return 0.0
+    return round(
+        sum(score_deal_proposal(player, draft, projected_state, profile) for draft in valid_drafts),
+        2,
+    )
+
+
+def _build_trade_bundle_drafts(
+    player: dict,
+    receiver: dict,
+    candidate: dict[str, Any],
+    game_state: dict,
+    profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    settings = game_state.get("settings", {})
+    if not settings.get("deals_enabled", True):
+        return []
+
+    player_id = int(player.get("id") or 0)
+    receiver_id = int(receiver.get("id") or 0)
+    if player_id <= 0 or receiver_id <= 0:
+        return []
+
+    max_active_deals = int(settings.get("max_active_deals_per_player", 3) or 3)
+    if build_deal_summary(player, game_state, profile)["active_deal_count"] >= max_active_deals:
+        return []
+    if build_deal_summary(receiver, game_state, profile)["active_deal_count"] >= max_active_deals:
+        return []
+
+    context = _pairwise_deal_context(player_id, receiver_id, game_state)
+    if context["active_deal_count"] > 0 or context["pending_incoming"] > 0 or context["pending_outgoing"] > 0:
+        return []
+
+    projected_state = _project_trade_candidate_state(game_state, player_id, receiver_id, candidate)
+    econ = projected_state.get("econ", {})
+
+    focus_props = []
+    for prop_id in candidate.get("requested_props") or []:
+        prop = _find_property(projected_state, prop_id)
+        if prop is None or prop.get("property_type") != "property" or not prop.get("group_color"):
+            continue
+        if monopoly_completion_ratio(player_id, prop, projected_state) < 1.0:
+            continue
+        if not any(
+            int(existing.get("owner_id") or 0) == player_id
+            and existing.get("property_type") == "property"
+            and existing.get("group_color") == prop.get("group_color")
+            for existing in game_state.get("properties", [])
+        ):
+            continue
+        focus_props.append(prop)
+
+    if not focus_props:
+        return []
+
+    focus_prop = sorted(
+        focus_props,
+        key=lambda entry: (
+            float(entry.get("base_price", 0) or 0),
+            float(calculate_rent_with_dev(entry, econ, projected_state) or 0),
+        ),
+        reverse=True,
+    )[0]
+    group_color = focus_prop.get("group_color")
+    group_scope = {"mode": "selected_group_colors", "group_colors": [group_color]}
+    group_props = [
+        prop
+        for prop in projected_state.get("properties", [])
+        if int(prop.get("owner_id") or 0) == player_id
+        and prop.get("property_type") == "property"
+        and prop.get("group_color") == group_color
+    ]
+    if not group_props:
+        return []
+
+    group_rent = round(
+        sum(float(calculate_rent_with_dev(prop, econ, projected_state) or 0) for prop in group_props),
+        2,
+    )
+    protection_options: list[dict[str, Any] | None] = [None]
+    if group_rent >= 28.0:
+        protection_options.append({
+            "type": "rent_discount",
+            "grantor_id": player_id,
+            "beneficiary_id": receiver_id,
+            "scope": group_scope,
+            "config": {"rent_multiplier": 0.42 if group_rent >= 85.0 else 0.55},
+            "deadline": {"metric": "beneficiary_turns", "initial": 3 if group_rent >= 85.0 else 2},
+        })
+    if group_rent >= 60.0:
+        protection_options.append({
+            "type": "rent_immunity",
+            "grantor_id": player_id,
+            "beneficiary_id": receiver_id,
+            "scope": group_scope,
+            "config": {},
+            "deadline": {"metric": "beneficiary_turns", "initial": 2 if group_rent >= 110.0 else 1},
+        })
+
+    investment_options: list[dict[str, Any] | None] = [None]
+    if settings.get("private_equity_enabled", True):
+        buildable_group_props = [
+            prop for prop in group_props
+            if not prop.get("is_mortgaged")
+            and has_full_monopoly(prop, projected_state)
+            and not property_is_fully_developed(prop, projected_state)
+        ]
+        receiver_projection = _find_player(projected_state, receiver_id) or receiver
+        receiver_balance = float(receiver_projection.get("balance", 0) or 0)
+        reserve_floor = float(profile.get("liquidity", {}).get("reserve_cash_floor", 250) or 250)
+        available_cash = max(0.0, receiver_balance - max(125.0, reserve_floor * 0.6))
+        if buildable_group_props and available_cash >= 100.0:
+            focus_build = sorted(
+                buildable_group_props,
+                key=lambda prop: (float(prop.get("base_price", 0) or 0), -int(prop.get("dev_level", 0) or 0)),
+                reverse=True,
+            )[0]
+            next_level = min(5, int(focus_build.get("dev_level", 0) or 0) + 1)
+            development_cost = max(
+                100.0,
+                float(calculate_development_cost(focus_build.get("base_price", 0), next_level, projected_state) or 0),
+            )
+            base_escrow = round(min(available_cash, max(100.0, development_cost * 0.95)), 2)
+            payout_limit = float(settings.get("max_private_equity_payout_multiple", 1.75) or 1.75)
+            payout_multiple = min(payout_limit, 1.6 if group_rent >= 85.0 else 1.48)
+            if base_escrow >= 100.0:
+                investment_options.append({
+                    "type": "development_investment",
+                    "investor_id": receiver_id,
+                    "recipient_id": player_id,
+                    "grantor_id": receiver_id,
+                    "beneficiary_id": player_id,
+                    "scope": group_scope,
+                    "config": {
+                        "escrow_amount": base_escrow,
+                        "profit_share_percent": 0.42 if group_rent >= 85.0 else 0.34,
+                        "max_payout": round(base_escrow * payout_multiple, 2),
+                    },
+                    "deadline": {"metric": "beneficiary_rotations", "initial": 3 if group_rent >= 85.0 else 2},
+                })
+
+            aggressive_escrow = round(min(available_cash, max(base_escrow + 50.0, development_cost * 1.2)), 2)
+            aggressive_multiple = min(payout_limit, 1.72)
+            if aggressive_escrow >= base_escrow + 25.0 and aggressive_escrow <= receiver_balance:
+                investment_options.append({
+                    "type": "development_investment",
+                    "investor_id": receiver_id,
+                    "recipient_id": player_id,
+                    "grantor_id": receiver_id,
+                    "beneficiary_id": player_id,
+                    "scope": group_scope,
+                    "config": {
+                        "escrow_amount": aggressive_escrow,
+                        "profit_share_percent": 0.48 if group_rent >= 110.0 else 0.4,
+                        "max_payout": round(aggressive_escrow * aggressive_multiple, 2),
+                    },
+                    "deadline": {"metric": "beneficiary_rotations", "initial": 3},
+                })
+
+    best_draft = None
+    best_score = float("-inf")
+    for protection in protection_options:
+        for investment in investment_options:
+            clauses = [clause for clause in (protection, investment) if clause]
+            if not clauses:
+                continue
+            proposal = {
+                "counterparty_id": receiver_id,
+                "title": "Set completion equity pact" if protection and investment else "Set completion sweetener",
+                "clauses": clauses,
+            }
+            my_score = score_deal_proposal(player, proposal, projected_state, profile)
+            other_score = score_deal_proposal(receiver, proposal, projected_state, profile)
+            total_score = my_score + max(0.0, other_score * 0.45)
+            if protection and investment:
+                total_score += 4.0
+            if my_score < -24.0 or other_score < 4.0 or total_score <= 0.0:
+                continue
+            if total_score > best_score:
+                best_draft = proposal
+                best_score = total_score
+
+    return [best_draft] if best_draft is not None else []
+
+
 def _finalize_trade_candidate(
     player: dict,
     receiver: dict,
@@ -1478,6 +1723,9 @@ def _finalize_trade_candidate(
         "requested_props": list(candidate.get("requested_props", []) or []),
         "offered_lobby_pledges": list(candidate.get("offered_lobby_pledges", []) or []),
         "requested_lobby_pledges": list(candidate.get("requested_lobby_pledges", []) or []),
+        "included_deal_drafts": [
+            draft for draft in (candidate.get("included_deal_drafts", []) or []) if isinstance(draft, dict)
+        ],
     }
 
     def score_candidate() -> tuple[float, float]:
@@ -1500,6 +1748,31 @@ def _finalize_trade_candidate(
             game_state=game_state,
             profile=profile,
         )
+        if candidate["included_deal_drafts"]:
+            projected_state = _project_trade_candidate_state(
+                game_state,
+                int(player.get("id") or 0),
+                int(receiver.get("id") or 0),
+                candidate,
+            )
+            self_score = round(
+                self_score + _score_bundled_deal_drafts_for_player(
+                    player,
+                    candidate["included_deal_drafts"],
+                    projected_state,
+                    profile,
+                ),
+                2,
+            )
+            receiver_score = round(
+                receiver_score + _score_bundled_deal_drafts_for_player(
+                    receiver,
+                    candidate["included_deal_drafts"],
+                    projected_state,
+                    profile,
+                ),
+                2,
+            )
         return self_score, receiver_score
 
     self_score, receiver_score = score_candidate()
@@ -1528,6 +1801,7 @@ def _finalize_trade_candidate(
         candidate["offered_money"] <= 0
         and not candidate["offered_props"]
         and not candidate["offered_lobby_pledges"]
+        and not candidate["included_deal_drafts"]
     ):
         return None
     if self_score < self_floor or receiver_score < receiver_floor:
@@ -1623,18 +1897,36 @@ def choose_trade_proposal(player: dict, game_state: dict, profile: dict[str, Any
         if max_offer > 0:
             cash_offer = round(min(max_offer, max(minimum_cash_offer, projected_score * 0.72)), 2)
 
+        def promote_candidate(finalized: dict[str, Any] | None) -> None:
+            nonlocal candidate, best_score
+            if finalized is None or finalized["candidate_score"] <= best_score:
+                return
+            candidate = {
+                "receiver_id": owner_id,
+                "offered_money": finalized["offered_money"],
+                "requested_money": finalized["requested_money"],
+                "offered_props": finalized["offered_props"],
+                "requested_props": finalized["requested_props"],
+                "offered_lobby_pledges": finalized["offered_lobby_pledges"],
+                "requested_lobby_pledges": finalized["requested_lobby_pledges"],
+                "included_deal_drafts": finalized["included_deal_drafts"],
+                "reason": doctrine,
+            }
+            best_score = finalized["candidate_score"]
+
+        base_terms = {
+            "receiver_id": owner_id,
+            "offered_money": cash_offer,
+            "requested_money": 0.0,
+            "offered_props": [],
+            "requested_props": [prop["id"]],
+            "offered_lobby_pledges": [],
+            "requested_lobby_pledges": [],
+        }
         base_candidate = _finalize_trade_candidate(
             player,
             receiver,
-            {
-                "receiver_id": owner_id,
-                "offered_money": cash_offer,
-                "requested_money": 0.0,
-                "offered_props": [],
-                "requested_props": [prop["id"]],
-                "offered_lobby_pledges": [],
-                "requested_lobby_pledges": [],
-            },
+            base_terms,
             balance=balance,
             reserve=reserve,
             max_offer=max_offer,
@@ -1644,18 +1936,38 @@ def choose_trade_proposal(player: dict, game_state: dict, profile: dict[str, Any
             game_state=game_state,
             profile=profile,
         )
-        if base_candidate is not None and base_candidate["candidate_score"] > best_score:
-            candidate = {
-                "receiver_id": owner_id,
-                "offered_money": base_candidate["offered_money"],
-                "requested_money": base_candidate["requested_money"],
-                "offered_props": base_candidate["offered_props"],
-                "requested_props": base_candidate["requested_props"],
-                "offered_lobby_pledges": base_candidate["offered_lobby_pledges"],
-                "requested_lobby_pledges": base_candidate["requested_lobby_pledges"],
-                "reason": doctrine,
-            }
-            best_score = base_candidate["candidate_score"]
+        promote_candidate(base_candidate)
+
+        bundled_base_terms = {
+            **base_terms,
+            "offered_money": round(max(0.0, base_terms["offered_money"] * 0.55), 2),
+        }
+        bundled_base_drafts = _build_trade_bundle_drafts(
+            player,
+            receiver,
+            bundled_base_terms,
+            game_state,
+            profile,
+        )
+        if bundled_base_drafts:
+            promote_candidate(
+                _finalize_trade_candidate(
+                    player,
+                    receiver,
+                    {
+                        **bundled_base_terms,
+                        "included_deal_drafts": bundled_base_drafts,
+                    },
+                    balance=balance,
+                    reserve=reserve,
+                    max_offer=max_offer,
+                    receiver_floor=receiver_floor,
+                    self_floor=self_floor,
+                    doctrine=doctrine,
+                    game_state=game_state,
+                    profile=profile,
+                )
+            )
 
         for offered_prop in my_tradeable_props:
             offered_prop_id = int(offered_prop.get("id") or 0)
@@ -1669,18 +1981,19 @@ def choose_trade_proposal(player: dict, game_state: dict, profile: dict[str, Any
             ):
                 continue
 
+            swap_terms = {
+                "receiver_id": owner_id,
+                "offered_money": 0.0,
+                "requested_money": 0.0,
+                "offered_props": [offered_prop_id],
+                "requested_props": [prop["id"]],
+                "offered_lobby_pledges": [],
+                "requested_lobby_pledges": [],
+            }
             swap_candidate = _finalize_trade_candidate(
                 player,
                 receiver,
-                {
-                    "receiver_id": owner_id,
-                    "offered_money": 0.0,
-                    "requested_money": 0.0,
-                    "offered_props": [offered_prop_id],
-                    "requested_props": [prop["id"]],
-                    "offered_lobby_pledges": [],
-                    "requested_lobby_pledges": [],
-                },
+                swap_terms,
                 balance=balance,
                 reserve=reserve,
                 max_offer=max_offer,
@@ -1690,20 +2003,34 @@ def choose_trade_proposal(player: dict, game_state: dict, profile: dict[str, Any
                 game_state=game_state,
                 profile=profile,
             )
-            if swap_candidate is None or swap_candidate["candidate_score"] <= best_score:
-                continue
+            promote_candidate(swap_candidate)
 
-            candidate = {
-                "receiver_id": owner_id,
-                "offered_money": swap_candidate["offered_money"],
-                "requested_money": swap_candidate["requested_money"],
-                "offered_props": swap_candidate["offered_props"],
-                "requested_props": swap_candidate["requested_props"],
-                "offered_lobby_pledges": swap_candidate["offered_lobby_pledges"],
-                "requested_lobby_pledges": swap_candidate["requested_lobby_pledges"],
-                "reason": doctrine,
-            }
-            best_score = swap_candidate["candidate_score"]
+            bundled_swap_drafts = _build_trade_bundle_drafts(
+                player,
+                receiver,
+                swap_terms,
+                game_state,
+                profile,
+            )
+            if bundled_swap_drafts:
+                promote_candidate(
+                    _finalize_trade_candidate(
+                        player,
+                        receiver,
+                        {
+                            **swap_terms,
+                            "included_deal_drafts": bundled_swap_drafts,
+                        },
+                        balance=balance,
+                        reserve=reserve,
+                        max_offer=max_offer,
+                        receiver_floor=receiver_floor,
+                        self_floor=self_floor,
+                        doctrine=doctrine,
+                        game_state=game_state,
+                        profile=profile,
+                    )
+                )
 
     if candidate is not None:
         redis_client.set(redis_key, str(game_state.get("current_round", 0)), ex=BOT_TASK_TTL_SECONDS)
@@ -1730,6 +2057,27 @@ def evaluate_trade_response(
         game_state=game_state,
         profile=profile,
     )
+    bundled_deal_drafts = [
+        draft
+        for draft in (getattr(trade, "included_deal_drafts", []) or [])
+        if isinstance(draft, dict)
+    ]
+    if bundled_deal_drafts:
+        projected_state = _project_trade_candidate_state(
+            game_state,
+            int(getattr(trade, "initiator_id", 0) or 0),
+            int(getattr(trade, "receiver_id", player.get("id")) or player.get("id") or 0),
+            {
+                "offered_money": float(getattr(trade, "offered_money", 0) or 0),
+                "requested_money": float(getattr(trade, "requested_money", 0) or 0),
+                "offered_props": getattr(trade, "offered_props", []) or [],
+                "requested_props": getattr(trade, "requested_props", []) or [],
+            },
+        )
+        score = round(
+            score + _score_bundled_deal_drafts_for_player(player, bundled_deal_drafts, projected_state, profile),
+            2,
+        )
     acceptance_margin = float(profile["trade"]["acceptance_margin"])
     if doctrine in {"policy_shaping", "social_democracy_leverage"}:
         acceptance_margin -= regime["state_protection_score"] * 12.0
@@ -3538,6 +3886,7 @@ def _bot_propose_trade(match_id: int, player_id: int, action: dict[str, Any]) ->
         "requested_props": action.get("requested_props", []),
         "offered_lobby_pledges": action.get("offered_lobby_pledges", []),
         "requested_lobby_pledges": action.get("requested_lobby_pledges", []),
+        "included_deal_drafts": action.get("included_deal_drafts", []),
     }
     if validate_trade_proposal(game_state, player_id, payload):
         return False
@@ -3545,13 +3894,14 @@ def _bot_propose_trade(match_id: int, player_id: int, action: dict[str, Any]) ->
     trade = Trade(
         match_id=match_id,
         initiator_id=player_id,
-        receiver_id=int(action["receiver_id"]),
-        offered_money=float(action.get("offered_money", 0) or 0),
-        requested_money=float(action.get("requested_money", 0) or 0),
-        offered_props=action.get("offered_props", []),
-        requested_props=action.get("requested_props", []),
-        offered_lobby_pledges=action.get("offered_lobby_pledges", []),
-        requested_lobby_pledges=action.get("requested_lobby_pledges", []),
+        receiver_id=payload["receiver_id"],
+        offered_money=payload["offered_money"],
+        requested_money=payload["requested_money"],
+        offered_props=payload["offered_props"],
+        requested_props=payload["requested_props"],
+        offered_lobby_pledges=payload["offered_lobby_pledges"],
+        requested_lobby_pledges=payload["requested_lobby_pledges"],
+        included_deal_drafts=payload["included_deal_drafts"],
         status="pending",
         created_at=datetime.utcnow(),
     )
@@ -3564,12 +3914,13 @@ def _bot_propose_trade(match_id: int, player_id: int, action: dict[str, Any]) ->
     trade_data["initiator_username"] = initiator.get("username") if initiator else ""
     trade_data["receiver_username"] = receiver.get("username") if receiver else ""
     pledge_suffix = " including lobbying pledges" if action.get("offered_lobby_pledges") or action.get("requested_lobby_pledges") else ""
+    bundle_suffix = " with bundled deal terms" if payload.get("included_deal_drafts") else ""
 
     socketio.emit("trade_proposed", trade_data, room=str(match_id))
     next_state = log_and_broadcast(
         game_state,
         "trade_proposed",
-        f"{initiator.get('username')} proposed a trade to {receiver.get('username')}{pledge_suffix}",
+        f"{initiator.get('username')} proposed a trade to {receiver.get('username')}{pledge_suffix}{bundle_suffix}",
         match_id,
         redis_client,
         socketio,
@@ -3636,7 +3987,7 @@ def _bot_accept_trade(match_id: int, trade: Trade) -> None:
     if not game_state:
         return
 
-    game_state, pledge_results, error = apply_trade_acceptance(game_state, trade, match_id)
+    game_state, pledge_results, created_deals, error = apply_trade_acceptance(game_state, trade, match_id)
     if error:
         _bot_reject_trade(match_id, trade)
         return
@@ -3668,10 +4019,17 @@ def _bot_accept_trade(match_id: int, trade: Trade) -> None:
     trade.resolved_at = datetime.utcnow()
     db.session.commit()
 
+    game_state = attach_deals_snapshot(game_state, match_id)
+
+    activated_deals_suffix = ""
+    if created_deals:
+        count = len(created_deals)
+        activated_deals_suffix = f" and activated {count} bundled deal{'s' if count != 1 else ''}"
+
     game_state = log_and_broadcast(
         game_state,
         "trade_completed",
-        f"Trade accepted between {initiator.get('username')} and {receiver.get('username')}",
+        f"Trade accepted between {initiator.get('username')} and {receiver.get('username')}{activated_deals_suffix}",
         match_id,
         redis_client,
         socketio,
@@ -3688,7 +4046,11 @@ def _bot_accept_trade(match_id: int, trade: Trade) -> None:
                 socketio,
                 player_id=payer_id,
             )
-    socketio.emit("trade_resolved", {"trade": trade.to_dict(), "accepted": True}, room=str(match_id))
+    socketio.emit(
+        "trade_resolved",
+        {"trade": trade.to_dict(), "accepted": True, "created_deals": created_deals},
+        room=str(match_id),
+    )
     persist_game_state(game_state, match_id, redis_client)
     broadcast_game_state_snapshot(socketio, match_id, game_state)
 

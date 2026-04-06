@@ -20,11 +20,14 @@ from app.engine.debt import charge_player_to_player, credit_player_with_debt_set
 from app.engine.social import PROLETARIAT_UNION_ID, calculate_union_charge, property_income_blocked, property_is_unionized
 from app.engine.deals import apply_investment_profit_share, apply_rent_deal_effects
 
-BOARD_SIZE = 48
+RETIRED_BOARD_POSITIONS = {1, 3, 7, 8, 21, 28, 29, 33, 35, 41, 42, 43, 44, 45, 46}
+BOARD_POSITION_ORDER = tuple(position for position in range(48) if position not in RETIRED_BOARD_POSITIONS)
+BOARD_INDEX_BY_POSITION = {position: index for index, position in enumerate(BOARD_POSITION_ORDER)}
+BOARD_SIZE = len(BOARD_POSITION_ORDER)
 
 # Positions by type
-COMMUNITY_CHEST_POSITIONS = {3, 17, 29, 42}
-CHANCE_POSITIONS = {8, 22, 33, 44}
+COMMUNITY_CHEST_POSITIONS = {17}
+CHANCE_POSITIONS = {22}
 TAX_INCOME_POSITION = 5
 TAX_LUXURY_POSITION = 39
 TAX_SUPER_POSITION = 47
@@ -36,19 +39,51 @@ START_POSITION = 0
 
 TRANSIT_POSITIONS = {6, 15, 25, 36}
 
+
+def normalize_board_position(position: int | None) -> int:
+    try:
+        normalized = int(position)
+    except (TypeError, ValueError):
+        return START_POSITION
+
+    if normalized in BOARD_INDEX_BY_POSITION:
+        return normalized
+
+    for candidate in BOARD_POSITION_ORDER:
+        if candidate >= normalized:
+            return candidate
+
+    return START_POSITION
+
+
+def board_index(position: int | None) -> int:
+    return BOARD_INDEX_BY_POSITION[normalize_board_position(position)]
+
+
+def did_pass_go(old_position: int | None, new_position: int | None) -> bool:
+    normalized_old = normalize_board_position(old_position)
+    normalized_new = normalize_board_position(new_position)
+    if normalized_old == normalized_new:
+        return False
+    return board_index(normalized_new) <= board_index(normalized_old)
+
 # Nearest airport lookup (from a given position, which transit is nearest)
 def nearest_transit(position: int) -> int:
-    transits = sorted(TRANSIT_POSITIONS)
+    current_idx = board_index(position)
+    transits = sorted(TRANSIT_POSITIONS, key=board_index)
     # find clockwise nearest
     for t in transits:
-        if t >= position:
+        if board_index(t) >= current_idx:
             return t
     return transits[0]  # wrap around
 
 
 def move_player(current_position: int, roll: int, board_size: int = BOARD_SIZE) -> tuple[int, bool]:
-    new_position = (current_position + roll) % board_size
-    passed_go = new_position < current_position or (current_position + roll >= board_size)
+    normalized_position = normalize_board_position(current_position)
+    current_idx = board_index(normalized_position)
+    new_idx = (current_idx + roll) % board_size
+    new_position = BOARD_POSITION_ORDER[new_idx]
+    passed_go = roll > 0 and current_idx + roll >= board_size
     return new_position, passed_go
 
 
@@ -88,7 +123,11 @@ def resolve_space(
     Resolve the effect of a player landing on their current position.
     Returns (updated_player, updated_game_state, updated_econ, log_entries).
     """
-    position = player["current_position"]
+    position = normalize_board_position(player["current_position"])
+    if position != player["current_position"]:
+        player = dict(player)
+        player["current_position"] = position
+        game_state = _update_player_state(game_state, player)
     logs = []
     free_parking_pot = float(game_state.get("free_parking_pot", 0.0))
     fp_enabled = settings.get("free_parking_pot_enabled", False)
@@ -272,6 +311,15 @@ def resolve_space(
             {
                 "event_type": "rent_suspended",
                 "description": f"{prop['name']} is under labor action — no rent is collected this turn.",
+            }
+        )
+        return player, game_state, econ, logs
+
+    if owner.get("is_jailed", False) and not settings.get("collect_rent_while_jailed", False):
+        logs.append(
+            {
+                "event_type": "rent_suspended",
+                "description": f"{owner.get('username', 'The owner')} is in jail — {prop['name']} does not collect rent this turn.",
             }
         )
         return player, game_state, econ, logs
@@ -475,11 +523,11 @@ def apply_card_effect(
         logs.append({"event_type": "move", "description": "Advanced to START."})
 
     elif effect == "advance_to_position":
-        target = int(value)
-        old_pos = player["current_position"]
+        target = normalize_board_position(int(value))
+        old_pos = normalize_board_position(player["current_position"])
         player["current_position"] = target
         game_state = _update_player_state(game_state, player)
-        if target < old_pos:  # passed go
+        if did_pass_go(old_pos, target):
             go_salary = float(settings.get("go_salary", 200))
             if settings.get("double_on_go", False):
                 go_salary *= 2
@@ -492,11 +540,11 @@ def apply_card_effect(
         logs.extend(land_logs)
 
     elif effect == "advance_to_nearest_transit":
-        near = nearest_transit(player["current_position"])
-        old_pos = player["current_position"]
+        old_pos = normalize_board_position(player["current_position"])
+        near = nearest_transit(old_pos)
         player["current_position"] = near
         game_state = _update_player_state(game_state, player)
-        if near < old_pos:
+        if did_pass_go(old_pos, near):
             go_salary = float(settings.get("go_salary", 200))
             game_state, credit_result = credit_player_with_debt_settlement(game_state, player["id"], go_salary)
             player = credit_result.get("player") or player
@@ -561,7 +609,7 @@ def apply_card_effect(
 
     elif effect == "move_back":
         steps = int(value)
-        player["current_position"] = max(0, player["current_position"] - steps)
+        player["current_position"] = move_player(player["current_position"], -steps)[0]
         game_state = _update_player_state(game_state, player)
         player, game_state, econ, land_logs = resolve_space(
             player, game_state, econ, settings, redis_client, socketio_instance, match_id

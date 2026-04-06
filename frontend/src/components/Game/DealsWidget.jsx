@@ -18,7 +18,7 @@ function dealStatusTone(deal, myPlayerId) {
 
 
 export default function DealsWidget() {
-  const { deals, players, properties, myPlayerId, settings, economy, setActiveDeal, setActiveModal } = useGameStore();
+  const { deals, players, properties, myPlayerId, settings, economy, setActiveDeal, setActiveModal, removeQueuedModal } = useGameStore();
   const dealsEnabled = settings?.deals_enabled !== false;
 
   const items = useMemo(() => sortDealsForPlayer(deals, myPlayerId).slice(0, 3), [deals, myPlayerId]);
@@ -52,6 +52,7 @@ export default function DealsWidget() {
                 type="button"
                 onClick={() => {
                   setActiveDeal(deal);
+                  removeQueuedModal('deals', deal.id);
                   setActiveModal('deals');
                 }}
                 className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-slate-500 ${dealStatusTone(deal, myPlayerId)}`}

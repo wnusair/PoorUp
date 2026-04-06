@@ -131,7 +131,9 @@ CREATE TABLE IF NOT EXISTS deals (
     cancelled_at        TIMESTAMP,
     last_updated_at     TIMESTAMP DEFAULT now(),
     proposal_version    INTEGER DEFAULT 1,
-    counter_of_deal_id  INTEGER REFERENCES deals(id)
+    counter_of_deal_id  INTEGER REFERENCES deals(id),
+    termination_requested_by_id INTEGER REFERENCES match_players(id) ON DELETE SET NULL,
+    termination_requested_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS deal_clauses (

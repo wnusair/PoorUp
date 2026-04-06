@@ -176,9 +176,9 @@ class EventEngineTests(unittest.TestCase):
             88,
         )
 
-        self.assertEqual(taxed_state['free_parking_pot'], 200.0)
-        self.assertEqual(taxed_econ['treasury_balance'], 500.0)
-        self.assertEqual(taxed_player['balance'], 800.0)
+        self.assertAlmostEqual(taxed_state['free_parking_pot'], 130.43, places=2)
+        self.assertAlmostEqual(taxed_econ['treasury_balance'], 430.43, places=2)
+        self.assertAlmostEqual(taxed_player['balance'], 869.57, places=2)
 
         taxed_state = {
             **taxed_state,
@@ -197,7 +197,44 @@ class EventEngineTests(unittest.TestCase):
 
         self.assertEqual(collected_state['free_parking_pot'], 0.0)
         self.assertEqual(collected_econ['treasury_balance'], 300.0)
-        self.assertEqual(collected_player['balance'], 1000.0)
+        self.assertAlmostEqual(collected_player['balance'], 1000.0, places=2)
+
+    def test_move_player_skips_removed_board_positions(self):
+        start_step, passed_go = events.move_player(0, 1)
+        self.assertEqual(start_step, 2)
+        self.assertFalse(passed_go)
+
+        africa_step, passed_go = events.move_player(2, 1)
+        self.assertEqual(africa_step, 4)
+        self.assertFalse(passed_go)
+
+        south_asia_step, passed_go = events.move_player(6, 1)
+        self.assertEqual(south_asia_step, 9)
+        self.assertFalse(passed_go)
+
+        new_position, passed_go = events.move_player(34, 1)
+        self.assertEqual(new_position, 36)
+        self.assertFalse(passed_go)
+
+        west_edge_step, passed_go = events.move_player(20, 1)
+        self.assertEqual(west_edge_step, 22)
+        self.assertFalse(passed_go)
+
+        china_step, passed_go = events.move_player(27, 1)
+        self.assertEqual(china_step, 30)
+        self.assertFalse(passed_go)
+
+        east_edge_step, passed_go = events.move_player(32, 1)
+        self.assertEqual(east_edge_step, 34)
+        self.assertFalse(passed_go)
+
+        top_wrap_step, passed_go = events.move_player(40, 1)
+        self.assertEqual(top_wrap_step, 47)
+        self.assertFalse(passed_go)
+
+        moved_back, passed_go = events.move_player(47, -1)
+        self.assertEqual(moved_back, 40)
+        self.assertFalse(passed_go)
 
     def test_bankruptcy_bailout_requires_bailout_policy_to_be_enabled(self):
         redis_client = FakeRedis()

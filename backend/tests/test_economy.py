@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from app.engine.economy import (  # noqa: E402
+    apply_fiscal_inflation,
     apply_income_tax,
     apply_luxury_tax,
     apply_per_turn_tax,
@@ -14,6 +15,7 @@ from app.engine.economy import (  # noqa: E402
     calculate_development_cost,
     get_effective_tax_rate,
     get_rent_multiplier,
+    pay_welfare,
     property_is_fully_developed,
 )
 
@@ -93,6 +95,62 @@ class EconomyEngineTests(unittest.TestCase):
 
         self.assertTrue(property_is_fully_developed({'dev_level': 5}, liberal_state))
         self.assertFalse(property_is_fully_developed({'dev_level': 9}, minarchism_state))
+
+    def test_direct_stimulus_adds_more_inflation_than_treasury_injection(self):
+        econ = {'government_type': 'social_democracy', 'gov_type': 'social_democracy', 'inflation_rate': 0.03}
+        settings = {'government_type': 'social_democracy', 'go_salary': 200}
+
+        _, welfare_delta = apply_fiscal_inflation(
+            econ,
+            600,
+            settings,
+            active_player_count=4,
+            category='welfare_distribution',
+        )
+        _, stimulus_delta = apply_fiscal_inflation(
+            econ,
+            600,
+            settings,
+            active_player_count=4,
+            category='economic_stimulus',
+        )
+        _, treasury_delta = apply_fiscal_inflation(
+            econ,
+            600,
+            settings,
+            active_player_count=4,
+            category='treasury_injection',
+        )
+
+        self.assertGreater(welfare_delta, 0)
+        self.assertGreater(stimulus_delta, welfare_delta)
+        self.assertGreater(welfare_delta, treasury_delta)
+
+    def test_successful_welfare_round_raises_inflation(self):
+        players = [
+            {'id': 1, 'balance': 0.0, 'is_bankrupt': False},
+            {'id': 2, 'balance': 80.0, 'is_bankrupt': False},
+            {'id': 3, 'balance': 900.0, 'is_bankrupt': False},
+        ]
+        econ = {
+            'government_type': 'social_democracy',
+            'gov_type': 'social_democracy',
+            'welfare_payout': 60.0,
+            'treasury_balance': 1500.0,
+            'inflation_rate': 0.03,
+        }
+        settings = {
+            'government_type': 'social_democracy',
+            'welfare_system_enabled': True,
+            'go_salary': 200,
+        }
+
+        updated_players, updated_econ, distribution = pay_welfare(players, econ, settings)
+
+        self.assertTrue(distribution['successful'])
+        self.assertGreater(distribution['inflation_delta'], 0)
+        self.assertGreater(updated_econ['inflation_rate'], econ['inflation_rate'])
+        self.assertGreater(updated_players[0]['balance'], players[0]['balance'])
 
 
 if __name__ == '__main__':

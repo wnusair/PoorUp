@@ -1,3 +1,5 @@
+import { BOARD_POSITION_ORDER } from './constants';
+
 const GOVERNMENT_TYPE_ALIASES = {
   minarchism: 'minarchism',
   minarchy: 'minarchism',
@@ -93,6 +95,10 @@ export function normalizeSettings(settings = {}) {
     normalized.turn_timer_enabled = true;
   }
 
+  if (normalized.collect_rent_while_jailed == null) {
+    normalized.collect_rent_while_jailed = false;
+  }
+
   return normalized;
 }
 
@@ -100,6 +106,26 @@ export function normalizeSettings(settings = {}) {
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+
+const ACTIVE_BOARD_POSITIONS = new Set(BOARD_POSITION_ORDER);
+
+
+function normalizeBoardPosition(position, fallback = 0) {
+  const numericPosition = toNumber(position, fallback);
+
+  if (ACTIVE_BOARD_POSITIONS.has(numericPosition)) {
+    return numericPosition;
+  }
+
+  for (const candidate of BOARD_POSITION_ORDER) {
+    if (candidate >= numericPosition) {
+      return candidate;
+    }
+  }
+
+  return BOARD_POSITION_ORDER[0] ?? fallback;
 }
 
 
@@ -168,6 +194,7 @@ export function normalizeDeal(deal = {}) {
     counterparty_id: toNumber(deal.counterparty_id, null),
     proposal_version: toNumber(deal.proposal_version, 1),
     counter_of_deal_id: toNumber(deal.counter_of_deal_id, null),
+    termination_requested_by_id: toNumber(deal.termination_requested_by_id, null),
     status: deal.status || 'proposed',
     clauses: Array.isArray(deal.clauses) ? deal.clauses.map(normalizeDealClause) : [],
   };
@@ -236,7 +263,8 @@ export function normalizeEconomy(economy = {}, gameState = {}) {
 export function normalizePlayer(player = {}) {
   return {
     ...player,
-    position: player.current_position ?? player.position ?? 0,
+    position: normalizeBoardPosition(player.current_position ?? player.position ?? 0),
+    current_position: normalizeBoardPosition(player.current_position ?? player.position ?? 0),
     bankrupt: player.is_bankrupt ?? player.bankrupt ?? false,
     in_jail: player.is_jailed ?? player.in_jail ?? false,
     jail_cards: player.has_jail_card ? 1 : (player.jail_cards ?? 0),
@@ -259,7 +287,8 @@ export function normalizePlayers(players = []) {
 
 
 export function normalizeProperty(property = {}) {
-  const position = property.board_position ?? property.position ?? null;
+  const rawPosition = property.board_position ?? property.position ?? null;
+  const position = rawPosition == null ? null : normalizeBoardPosition(rawPosition, null);
   const devLevel = property.dev_level ?? property.development_level ?? 0;
   const groupColor = property.group_color ?? property.groupColor ?? null;
   const basePrice = property.base_price ?? property.basePrice ?? null;
@@ -325,7 +354,7 @@ export function normalizeProperties(properties = {}, socialProperties = {}) {
     const propertiesByPosition = {};
     for (const property of properties) {
       const normalized = normalizeProperty(mergePropertySocial(property, socialProperties));
-      if (normalized.board_position != null) {
+      if (normalized.board_position != null && ACTIVE_BOARD_POSITIONS.has(normalized.board_position)) {
         propertiesByPosition[normalized.board_position] = normalized;
       }
     }
@@ -340,7 +369,7 @@ export function normalizeProperties(properties = {}, socialProperties = {}) {
         socialProperties,
       ),
     );
-    if (normalized.board_position != null) {
+    if (normalized.board_position != null && ACTIVE_BOARD_POSITIONS.has(normalized.board_position)) {
       normalizedProperties[normalized.board_position] = normalized;
     }
   }

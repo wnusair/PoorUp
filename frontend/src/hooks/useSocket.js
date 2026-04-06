@@ -11,11 +11,47 @@ import {
   normalizeSettings,
   normalizeSocial,
 } from '../utils/gameState';
+import { BOARD_POSITION_ORDER } from '../utils/constants';
 
 const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_URL?.trim() || undefined;
 const SOCKET_PATH = import.meta.env.VITE_SOCKET_PATH?.trim() || '/socket.io';
 const DISCONNECT_GRACE_PERIOD_MS = 750;
 const SOCKET_ACK_TIMEOUT_MS = 5000;
+const BOARD_INDEX_BY_POSITION = Object.fromEntries(BOARD_POSITION_ORDER.map((position, index) => [position, index]));
+
+function normalizeBoardPosition(position) {
+  if (BOARD_INDEX_BY_POSITION[position] != null) {
+    return position;
+  }
+
+  for (const candidate of BOARD_POSITION_ORDER) {
+    if (candidate >= Number(position || 0)) {
+      return candidate;
+    }
+  }
+
+  return BOARD_POSITION_ORDER[0] ?? 0;
+}
+
+function buildBoardWalk(fromPosition, toPosition) {
+  const normalizedFrom = normalizeBoardPosition(fromPosition);
+  const normalizedTo = normalizeBoardPosition(toPosition);
+
+  if (normalizedFrom === normalizedTo) {
+    return [];
+  }
+
+  const steps = [];
+  let cursor = BOARD_INDEX_BY_POSITION[normalizedFrom];
+  const targetIndex = BOARD_INDEX_BY_POSITION[normalizedTo];
+
+  while (cursor !== targetIndex) {
+    cursor = (cursor + 1) % BOARD_POSITION_ORDER.length;
+    steps.push(BOARD_POSITION_ORDER[cursor]);
+  }
+
+  return steps;
+}
 
 let socketInstance = null;
 let socketUsageCount = 0;
@@ -151,6 +187,9 @@ function normalizeTradePayload(data) {
     request_properties: toBoardPositions(trade.request_properties ?? trade.requested_props ?? []),
     offer_lobby_pledges: normalizeLobbyPledges(trade.offer_lobby_pledges ?? trade.offered_lobby_pledges ?? []),
     request_lobby_pledges: normalizeLobbyPledges(trade.request_lobby_pledges ?? trade.requested_lobby_pledges ?? []),
+    included_deal_drafts: Array.isArray(trade.included_deal_drafts)
+      ? trade.included_deal_drafts.map((draft) => normalizeDeal(draft))
+      : [],
   };
 }
 
@@ -351,11 +390,16 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     setAuctionState,
     updateAuction,
     clearAuction,
+    setTrades,
+    upsertTrade,
+    removeTrade,
     setActiveTrade,
     setDeals,
     upsertDeal,
     setActiveDeal,
     clearActiveDeal,
+    enqueueModal,
+    removeQueuedModal,
     setAwaitingEndTurnPlayerId,
     setLobbyData,
     setSettings,
@@ -498,23 +542,14 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     subscribe('player_moved', (data) => {
       const STEP_MS = 160;      // ms between each board space step
       const DICE_ANIM_MS = 650; // how long the dice animation runs
-      const BOARD_SIZE = 48;
       const MAX_WALK_STEPS = 12; // beyond this we treat as teleport
 
-      const pos = data.position ?? data.to;
+      const pos = normalizeBoardPosition(data.position ?? data.to);
       const state = useGameStore.getState();
       const player = state.players.find((p) => p.id === data.player_id);
-      const fromPos = state.playerAnimPositions[data.player_id] ?? player?.position ?? 0;
+      const fromPos = normalizeBoardPosition(state.playerAnimPositions[data.player_id] ?? player?.position ?? 0);
 
-      // Build clockwise step list from fromPos → pos
-      const steps = [];
-      if (fromPos !== pos) {
-        let cur = fromPos;
-        while (cur !== pos) {
-          cur = (cur + 1) % BOARD_SIZE;
-          steps.push(cur);
-        }
-      }
+      const steps = buildBoardWalk(fromPos, pos);
 
       // Delay movement until the dice animation has finished
       const diceDelay = Math.max(0, DICE_ANIM_MS - (Date.now() - (state.diceRollTime || 0)));
@@ -669,11 +704,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
         clearAuction();
         const latestState = useGameStore.getState();
         if (latestState.activeModal === 'auction') {
-          if (latestState.activeTrade && latestState.activeTrade.receiver_id === latestState.myPlayerId) {
-            useGameStore.setState({ activeModal: 'trade' });
-          } else {
-            useGameStore.setState({ activeModal: null });
-          }
+          latestState.closeModal();
         }
       }, 2000);
     });
@@ -681,12 +712,18 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     // ─── Trade ─────────────────────────────────────────────────────────
     subscribe('trade_proposed', (data) => {
       const trade = normalizeTradePayload(data);
-      setActiveTrade(trade);
+      upsertTrade(trade);
       queueOrRun(() => {
         const state = useGameStore.getState();
-        const auctionBlockingModal = state.auctionState?.active || state.activeModal === 'auction';
-        if (trade.receiver_id === state.myPlayerId && !auctionBlockingModal && state.activeModal !== 'card') {
+        const shouldOpenImmediately = trade.receiver_id === state.myPlayerId && !state.auctionState?.active && !state.activeModal;
+        if (shouldOpenImmediately) {
+          setActiveTrade(trade);
           setActiveModal('trade');
+          return;
+        }
+
+        if (trade.receiver_id === state.myPlayerId) {
+          enqueueModal('trade', trade.id);
         }
       });
       addLogEntry({
@@ -699,6 +736,8 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
 
     subscribe('trade_resolved', (data) => {
       const trade = normalizeTradePayload(data);
+      const stateBeforeResolution = useGameStore.getState();
+      const isActiveTrade = stateBeforeResolution.activeTrade?.id === trade.id;
 
       if (data.accepted) {
         addLogEntry({
@@ -711,6 +750,11 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
         if (data.players) data.players.forEach((p) => updatePlayer(p.id, p));
         if (data.properties)
           data.properties.forEach((prop) => updateProperty(prop.position, prop));
+        if (Array.isArray(data.created_deals)) {
+          data.created_deals
+            .map((deal) => normalizeDealPayload(deal))
+            .forEach((deal) => upsertDeal(deal));
+        }
       } else {
         addLogEntry({
           type: 'trade_rejected',
@@ -719,9 +763,9 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
           timestamp: new Date().toISOString(),
         });
       }
-      useGameStore.setState({ activeTrade: null });
-      if (useGameStore.getState().activeModal === 'trade') {
-        useGameStore.setState({ activeModal: null });
+      removeTrade(trade.id);
+      if (isActiveTrade && useGameStore.getState().activeModal === 'trade') {
+        useGameStore.getState().closeModal();
       }
     });
 
@@ -872,11 +916,16 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
 
       const state = useGameStore.getState();
       const replacesActiveDeal = state.activeDeal?.id != null && deal.counter_of_deal_id === state.activeDeal.id;
-      if (deal.counterparty_id === state.myPlayerId || replacesActiveDeal) {
+      if (replacesActiveDeal) {
         setActiveDeal(deal);
       }
-      if (deal.counterparty_id === state.myPlayerId) {
+
+      const shouldOpenImmediately = deal.counterparty_id === state.myPlayerId && !state.activeModal;
+      if (shouldOpenImmediately) {
+        setActiveDeal(deal);
         setActiveModal('deals');
+      } else if (deal.counterparty_id === state.myPlayerId) {
+        enqueueModal('deals', deal.id);
       }
 
       addLogEntry(normalizeLogEntry({
@@ -888,6 +937,9 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     subscribe('deal_updated', (data) => {
       const deal = normalizeDealPayload(data);
       upsertDeal(deal);
+      if (deal.status !== 'proposed') {
+        removeQueuedModal('deals', deal.id);
+      }
       if (useGameStore.getState().activeDeal?.id === deal.id) {
         setActiveDeal(deal);
       }
@@ -896,6 +948,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     subscribe('deal_accepted', (data) => {
       const deal = normalizeDealPayload(data);
       upsertDeal(deal);
+      removeQueuedModal('deals', deal.id);
       if (useGameStore.getState().activeDeal?.id === deal.id) {
         setActiveDeal(deal);
       }
@@ -908,6 +961,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     subscribe('deal_rejected', (data) => {
       const deal = normalizeDealPayload(data);
       upsertDeal(deal);
+      removeQueuedModal('deals', deal.id);
       addLogEntry(normalizeLogEntry({
         event_type: 'deal_rejected',
         description: `Deal rejected between ${deal.proposer_name || 'Player'} and ${deal.counterparty_name || 'Player'}.`,
@@ -917,6 +971,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     subscribe('deal_expired', (data) => {
       const deal = normalizeDealPayload(data);
       upsertDeal(deal);
+      removeQueuedModal('deals', deal.id);
       addLogEntry(normalizeLogEntry({
         event_type: 'deal_expired',
         description: `Deal expired between ${deal.proposer_name || 'Player'} and ${deal.counterparty_name || 'Player'}.`,

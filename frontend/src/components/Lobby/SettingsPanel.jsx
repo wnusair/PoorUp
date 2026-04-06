@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS = {
   income_tax_on_pass_go: true,
   welfare_system_enabled: true,
   welfare_balance_cap: 0,
+  collect_rent_while_jailed: false,
   free_parking_pot_enabled: false,
   double_on_go: false,
 };
@@ -191,6 +192,7 @@ export default function SettingsPanel({ settings = {}, onChange, readOnly = fals
           <Toggle label="Allow Lobbying" settingKey="lobbying_enabled" description="Players can lobby for policy changes" />
           <Toggle label="Allow Deals" settingKey="deals_enabled" description="Players can negotiate temporary protections and funding contracts" />
           <Toggle label="Allow Private Equity" settingKey="private_equity_enabled" description="Development investment clauses can fund builds through escrow" />
+          <Toggle label="Collect Rent In Jail" settingKey="collect_rent_while_jailed" description="By default jailed owners do not collect rent. Turn this on to allow prison rent." />
           <Toggle label="Free Parking Jackpot" settingKey="free_parking_pot_enabled" description="Tax money pools at Free Parking" />
           <Toggle label="Double GO Salary" settingKey="double_on_go" description="Double GO salary is applied when enabled" />
         </div>

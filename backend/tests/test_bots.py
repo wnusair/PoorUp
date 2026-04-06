@@ -222,12 +222,11 @@ class BotStrategyTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 1500)
         other = make_player(2, 'Rival', 1500, is_bot=False)
         properties = [
-            make_property(1, 'Lagos', '#8B4513', 60, owner_id=1, board_position=1),
             make_property(2, 'Nairobi', '#8B4513', 60, owner_id=1, board_position=2),
             make_property(3, 'Cairo', '#8B4513', 100, owner_id=None, board_position=4),
         ]
         state = make_state([player, other], properties)
-        decision = bots.choose_property_purchase(player, properties[2], state, self.profile())
+        decision = bots.choose_property_purchase(player, properties[1], state, self.profile())
         self.assertEqual(decision['decision'], 'buy')
         self.assertEqual(decision['reason'], 'monopoly_completion')
 
@@ -254,8 +253,8 @@ class BotStrategyTests(unittest.TestCase):
     def test_liquidation_prefers_house_sale_then_mortgage_then_bankruptcy(self):
         player = make_player(1, 'Atlas', -120)
         other = make_player(2, 'Rival', 1000, is_bot=False)
-        developed = make_property(7, 'Delhi', '#EC4899', 100, owner_id=1, board_position=7, dev_level=2)
-        reserve = make_property(8, 'Karachi', '#EC4899', 120, owner_id=1, board_position=9)
+        developed = make_property(7, 'Karachi', '#EC4899', 120, owner_id=1, board_position=9, dev_level=2)
+        reserve = make_property(8, 'Dhaka', '#EC4899', 140, owner_id=1, board_position=10)
         state = make_state([player, other], [developed, reserve])
         profile = self.profile()
 
@@ -338,7 +337,6 @@ class BotStrategyTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 1800)
         rival = make_player(2, 'Rival', 1200, is_bot=False)
         properties = [
-            make_property(21, 'Berlin', '#EAB308', 220, owner_id=1, board_position=21),
             make_property(23, 'Paris', '#EAB308', 240, owner_id=1, board_position=23),
             make_property(24, 'London', '#EAB308', 260, owner_id=2, board_position=24),
         ]
@@ -352,11 +350,65 @@ class BotStrategyTests(unittest.TestCase):
         self.assertEqual(proposal['requested_props'], [24])
         self.assertGreater(proposal['offered_money'], 0)
 
+    def test_trade_bundle_drafts_pair_set_completion_with_protection_and_equity(self):
+        player = make_player(1, 'Atlas', 2100)
+        rival = make_player(2, 'Rival', 1800, is_bot=False)
+        properties = [
+            make_property(23, 'Paris', '#EAB308', 320, owner_id=1, board_position=23),
+            make_property(24, 'London', '#EAB308', 360, owner_id=2, board_position=24),
+        ]
+        state = make_state([player, rival], properties)
+        state['settings']['deals_enabled'] = True
+        state['settings']['private_equity_enabled'] = True
+
+        drafts = bots._build_trade_bundle_drafts(
+            player,
+            rival,
+            {
+                'receiver_id': 2,
+                'offered_money': 125.0,
+                'requested_money': 0.0,
+                'offered_props': [],
+                'requested_props': [24],
+                'offered_lobby_pledges': [],
+                'requested_lobby_pledges': [],
+            },
+            state,
+            self.profile(state['settings'], difficulty='hard', persona='expansionist'),
+        )
+
+        self.assertTrue(drafts)
+        self.assertEqual(drafts[0]['counterparty_id'], 2)
+        clause_types = {clause['type'] for clause in drafts[0]['clauses']}
+        self.assertIn('development_investment', clause_types)
+        self.assertTrue({'rent_immunity', 'rent_discount'} & clause_types)
+
+    def test_trade_proposal_can_attach_monopoly_completion_bundle(self):
+        player = make_player(1, 'Atlas', 2100)
+        rival = make_player(2, 'Rival', 1800, is_bot=False)
+        properties = [
+            make_property(23, 'Paris', '#EAB308', 320, owner_id=1, board_position=23),
+            make_property(24, 'London', '#EAB308', 360, owner_id=2, board_position=24),
+        ]
+        state = make_state([player, rival], properties)
+        state['settings']['deals_enabled'] = True
+        state['settings']['private_equity_enabled'] = True
+        profile = self.profile(state['settings'], difficulty='hard', persona='expansionist')
+
+        with patch.object(bots.Trade, 'query', new=StaticQuery(count_value=0)):
+            proposal = bots.choose_trade_proposal(player, state, profile)
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal['requested_props'], [24])
+        self.assertTrue(proposal.get('included_deal_drafts'))
+        clause_types = {clause['type'] for clause in proposal['included_deal_drafts'][0]['clauses']}
+        self.assertIn('development_investment', clause_types)
+
     def test_trade_proposal_prefers_property_swap_when_both_players_finish_sets(self):
         player = make_player(1, 'Atlas', 420)
         rival = make_player(2, 'Rival', 420, is_bot=False)
         properties = [
-            make_property(21, 'Berlin', '#EAB308', 220, owner_id=1, board_position=21),
+            make_property(23, 'Paris', '#EAB308', 240, owner_id=1, board_position=23),
             make_property(24, 'London', '#EAB308', 260, owner_id=2, board_position=24),
             make_property(31, 'Osaka', '#3B82F6', 200, owner_id=1, board_position=31),
             make_property(32, 'Tokyo', '#3B82F6', 210, owner_id=2, board_position=32),
@@ -375,7 +427,6 @@ class BotStrategyTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 900)
         rival = make_player(2, 'Rival', 150, is_bot=False)
         properties = [
-            make_property(21, 'Berlin', '#EAB308', 220, owner_id=1, board_position=21),
             make_property(23, 'Paris', '#EAB308', 240, owner_id=1, board_position=23),
             make_property(24, 'London', '#EAB308', 260, owner_id=2, board_position=24),
         ]
@@ -393,7 +444,6 @@ class BotStrategyTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 1800)
         rival = make_player(2, 'Rival', 1200, is_bot=False)
         properties = [
-            make_property(21, 'Berlin', '#EAB308', 220, owner_id=1, board_position=21),
             make_property(23, 'Paris', '#EAB308', 240, owner_id=1, board_position=23),
             make_property(24, 'London', '#EAB308', 260, owner_id=2, board_position=24),
         ]
@@ -484,7 +534,6 @@ class BotStrategyTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 1200)
         rival = make_player(2, 'Rival', 1200, is_bot=False)
         properties = [
-            make_property(21, 'Berlin', '#EAB308', 220, owner_id=1, board_position=21),
             make_property(23, 'Paris', '#EAB308', 240, owner_id=1, board_position=23),
             make_property(24, 'London', '#EAB308', 260, owner_id=2, board_position=24),
         ]
@@ -515,6 +564,204 @@ class BotStrategyTests(unittest.TestCase):
 
         self.assertEqual(decision, 'accept')
 
+    def test_trade_response_values_bundled_deals(self):
+        player = make_player(1, 'Atlas', 320)
+        rival = make_player(2, 'Rival', 1400, is_bot=False)
+        state = make_state([player, rival], [])
+        trade = SimpleNamespace(
+            initiator_id=2,
+            offered_money=0,
+            requested_money=100,
+            offered_props=[],
+            requested_props=[],
+            offered_lobby_pledges=[],
+            requested_lobby_pledges=[],
+            included_deal_drafts=[
+                {
+                    'title': 'Rescue Capital',
+                    'counterparty_id': 1,
+                    'clauses': [
+                        {
+                            'type': 'development_investment',
+                            'grantor_id': 2,
+                            'beneficiary_id': 1,
+                            'scope': {'mode': 'all_grantor_properties'},
+                            'config': {
+                                'escrow_amount': 350.0,
+                                'profit_share_percent': 0.2,
+                                'max_payout': 390.0,
+                            },
+                            'deadline': {'metric': 'beneficiary_turns', 'initial': 2},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        decision = bots.evaluate_trade_response(trade, player, state, self.profile())
+
+        self.assertEqual(decision, 'accept')
+
+    def test_bot_accept_trade_handles_created_deals_return_value(self):
+        initial_state = make_state(
+            [make_player(1, 'Atlas', 500), make_player(2, 'Rival', 450, is_bot=False)],
+            [],
+        )
+        accepted_state = {
+            **initial_state,
+            'players': [
+                {**initial_state['players'][0], 'balance': 400},
+                {**initial_state['players'][1], 'balance': 550},
+            ],
+        }
+        trade = SimpleNamespace(
+            initiator_id=1,
+            receiver_id=2,
+            offered_props=[],
+            requested_props=[],
+            status='pending',
+            resolved_at=None,
+            to_dict=lambda: {'id': 44, 'status': 'accepted'},
+        )
+        match_players = {
+            1: SimpleNamespace(balance=500),
+            2: SimpleNamespace(balance=450),
+        }
+        emitted = []
+        fake_socket = SimpleNamespace(
+            emit=lambda event, payload, room=None: emitted.append((event, payload, room)),
+        )
+
+        with patch.object(bots, 'load_game_state', return_value=initial_state), patch.object(
+            bots,
+            'apply_trade_acceptance',
+            return_value=(
+                accepted_state,
+                {'initiator': [], 'receiver': []},
+                [{'id': 91, 'title': 'Revenue Shield', 'status': 'accepted'}],
+                None,
+            ),
+        ), patch.object(
+            bots,
+            'attach_deals_snapshot',
+            side_effect=lambda game_state, *_args: game_state,
+        ) as attach_deals_snapshot, patch.object(
+            bots.MatchPlayer,
+            'query',
+            new=SimpleNamespace(get=lambda player_id: match_players[player_id]),
+        ), patch.object(
+            bots.db.session,
+            'commit',
+        ) as commit, patch.object(
+            bots,
+            'log_and_broadcast',
+            side_effect=lambda game_state, *_args, **_kwargs: game_state,
+        ) as log_and_broadcast, patch.object(
+            bots,
+            'persist_game_state',
+        ) as persist_game_state, patch.object(
+            bots,
+            'broadcast_game_state_snapshot',
+        ) as broadcast_game_state_snapshot, patch.object(
+            bots,
+            'socketio',
+            fake_socket,
+        ):
+            bots._bot_accept_trade(77, trade)
+
+        attach_deals_snapshot.assert_called_once_with(accepted_state, 77)
+        commit.assert_called_once()
+        persist_game_state.assert_called_once_with(accepted_state, 77, self.fake_redis)
+        broadcast_game_state_snapshot.assert_called_once_with(fake_socket, 77, accepted_state)
+        self.assertEqual(match_players[1].balance, 400)
+        self.assertEqual(match_players[2].balance, 550)
+        self.assertEqual(trade.status, 'accepted')
+        self.assertIn('activated 1 bundled deal', log_and_broadcast.call_args[0][2])
+        self.assertTrue(
+            any(
+                event == 'trade_resolved'
+                and payload.get('created_deals') == [{'id': 91, 'title': 'Revenue Shield', 'status': 'accepted'}]
+                for event, payload, _room in emitted
+            )
+        )
+
+    def test_bot_propose_trade_persists_bundled_deal_drafts(self):
+        state = make_state(
+            [make_player(1, 'Atlas', 1400), make_player(2, 'Rival', 1100, is_bot=False)],
+            [],
+        )
+        action = {
+            'receiver_id': 2,
+            'offered_money': 150.0,
+            'requested_money': 0.0,
+            'offered_props': [],
+            'requested_props': [],
+            'offered_lobby_pledges': [],
+            'requested_lobby_pledges': [],
+            'included_deal_drafts': [
+                {
+                    'counterparty_id': 2,
+                    'title': 'Equity shield',
+                    'clauses': [
+                        {
+                            'type': 'rent_discount',
+                            'grantor_id': 1,
+                            'beneficiary_id': 2,
+                            'scope': {'mode': 'all_grantor_properties'},
+                            'config': {'rent_multiplier': 0.5},
+                            'deadline': {'metric': 'beneficiary_turns', 'initial': 2},
+                        },
+                    ],
+                },
+            ],
+        }
+        emitted = []
+
+        with patch.object(bots, 'has_active_auction', return_value=False), patch.object(
+            bots,
+            'load_game_state',
+            return_value=state,
+        ), patch.object(
+            bots,
+            'validate_trade_proposal',
+            return_value=None,
+        ), patch.object(
+            bots.db.session,
+            'add',
+        ) as add_trade, patch.object(
+            bots.db.session,
+            'commit',
+        ) as commit, patch.object(
+            bots.socketio,
+            'emit',
+            side_effect=lambda event, payload, room=None: emitted.append((event, payload, room)),
+        ), patch.object(
+            bots,
+            'log_and_broadcast',
+            side_effect=lambda game_state, *_args, **_kwargs: game_state,
+        ) as log_and_broadcast, patch.object(
+            bots,
+            'persist_game_state',
+        ) as persist_game_state, patch.object(
+            bots,
+            'queue_bot_trade_responses',
+        ) as queue_bot_trade_responses, patch.object(
+            bots,
+            'queue_bot_state_evaluation',
+        ) as queue_bot_state_evaluation:
+            result = bots._bot_propose_trade(77, 1, action)
+
+        self.assertTrue(result)
+        add_trade.assert_called_once()
+        commit.assert_called_once()
+        trade = add_trade.call_args[0][0]
+        self.assertEqual(trade.included_deal_drafts, action['included_deal_drafts'])
+        self.assertIn('bundled deal terms', log_and_broadcast.call_args[0][2])
+        persist_game_state.assert_called_once_with(state, 77, self.fake_redis)
+        queue_bot_trade_responses.assert_called_once_with(77)
+        queue_bot_state_evaluation.assert_called_once_with(77, state, reason='bot_trade_follow_up')
+        self.assertTrue(any(event == 'trade_proposed' for event, _payload, _room in emitted))
+
     def test_doctrine_aware_pledges_are_more_valuable_for_hard_and_expert(self):
         player = make_player(1, 'Atlas', 1200)
         rival = make_player(2, 'Rival', 1200, is_bot=False)
@@ -533,7 +780,6 @@ class BotStrategyTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 1200)
         rival = make_player(2, 'Rival', 1200, is_bot=False)
         properties = [
-            make_property(21, 'Berlin', '#EAB308', 220, owner_id=1, board_position=21),
             make_property(23, 'Paris', '#EAB308', 240, owner_id=1, board_position=23),
             make_property(24, 'London', '#EAB308', 260, owner_id=1, board_position=24),
         ]

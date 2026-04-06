@@ -35,6 +35,13 @@ export default function ActiveDealsPanel({ deals, players, properties, myPlayerI
                 <div>
                   <p className="text-sm font-semibold text-white">{getDealCounterpartyName(deal, myPlayerId, players)}</p>
                   <p className="mt-1 text-xs uppercase tracking-[0.2em] text-gray-500">{deal.status}</p>
+                  {deal.status === 'accepted' && deal.termination_requested_by_id && (
+                    <p className="mt-2 text-xs text-amber-300">
+                      {deal.termination_requested_by_id === myPlayerId
+                        ? `Waiting for ${getDealCounterpartyName(deal, myPlayerId, players)} to confirm termination.`
+                        : `${deal.termination_requested_by_name || 'The other party'} requested termination.`}
+                    </p>
+                  )}
                 </div>
                 <span className="rounded-full border border-gray-700 bg-gray-900 px-2 py-1 text-[11px] text-gray-300">
                   v{deal.proposal_version || 1}

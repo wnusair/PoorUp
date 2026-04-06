@@ -235,6 +235,7 @@ def initialize_tax_stats(
             "per_player_amount": 0.0,
             "average_player_amount": 0.0,
             "configured_per_player": 0.0,
+            "inflation_delta": 0.0,
             "player_amounts": {},
             "funding_allocations": {},
             "funding_basis": "tax_paid_share",
@@ -294,6 +295,7 @@ def ensure_tax_stats(game_state: dict) -> dict:
     last_welfare_distribution.setdefault("per_player_amount", 0.0)
     last_welfare_distribution.setdefault("average_player_amount", 0.0)
     last_welfare_distribution.setdefault("configured_per_player", 0.0)
+    last_welfare_distribution.setdefault("inflation_delta", 0.0)
     last_welfare_distribution.setdefault("player_amounts", {})
     last_welfare_distribution.setdefault("funding_allocations", {})
     last_welfare_distribution.setdefault("funding_basis", "tax_paid_share")
@@ -455,6 +457,7 @@ def record_welfare_distribution(game_state: dict, distribution: dict) -> dict:
         "per_player_amount": round(float(distribution.get("per_player_amount", 0) or 0), 2),
         "average_player_amount": round(float(distribution.get("average_player_amount", distribution.get("per_player_amount", 0)) or 0), 2),
         "configured_per_player": round(float(distribution.get("configured_per_player", 0) or 0), 2),
+        "inflation_delta": round(float(distribution.get("inflation_delta", 0) or 0), 4),
         "player_amounts": normalized_player_amounts,
         "funding_allocations": {},
         "funding_basis": distribution.get("funding_basis", "tax_paid_share"),

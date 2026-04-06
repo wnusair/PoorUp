@@ -1,7 +1,7 @@
 import { useGameStore } from '../../hooks/useGameState';
 
 export default function SidebarMenuStack() {
-  const { settings, setActiveModal } = useGameStore();
+  const { settings, setActiveModal, clearTrade, clearActiveDeal } = useGameStore();
 
   const actions = [
     {
@@ -49,7 +49,15 @@ export default function SidebarMenuStack() {
           <button
             key={action.key}
             type="button"
-            onClick={() => setActiveModal(action.key)}
+            onClick={() => {
+              if (action.key === 'trade') {
+                clearTrade();
+              }
+              if (action.key === 'deals') {
+                clearActiveDeal();
+              }
+              setActiveModal(action.key);
+            }}
             className={`w-full rounded-lg border px-3 py-2 text-xs font-semibold transition ${action.className}`}
           >
             {action.label}
