@@ -12,6 +12,7 @@ from app.engine.economy import (  # noqa: E402
     apply_per_turn_tax,
     apply_property_tax,
     apply_super_tax,
+    apply_treasury_lobbying_inflation,
     calculate_development_cost,
     get_effective_tax_rate,
     get_rent_multiplier,
@@ -73,6 +74,15 @@ class EconomyEngineTests(unittest.TestCase):
         self.assertEqual(calculate_development_cost(200, 5, state), 135.0)
         self.assertEqual(calculate_development_cost(200, 6, state), 205.0)
 
+    def test_inflation_increases_development_costs(self):
+        state = {
+            'econ': {'gov_type': 'social_democracy', 'inflation_rate': 0.20},
+            'settings': {'government_type': 'social_democracy'},
+        }
+
+        self.assertEqual(calculate_development_cost(200, 1, state), 120.0)
+        self.assertEqual(calculate_development_cost(200, 2, state), 120.0)
+
     def test_minarchism_rent_multiplier_keeps_scaling_without_hotel_cap(self):
         state = {
             'econ': {'gov_type': 'minarchism'},
@@ -125,6 +135,21 @@ class EconomyEngineTests(unittest.TestCase):
         self.assertGreater(welfare_delta, 0)
         self.assertGreater(stimulus_delta, welfare_delta)
         self.assertGreater(welfare_delta, treasury_delta)
+
+    def test_treasury_lobbying_has_stronger_inflation_floor(self):
+        econ = {'government_type': 'social_democracy', 'gov_type': 'social_democracy', 'inflation_rate': 0.03}
+        settings = {'government_type': 'social_democracy', 'go_salary': 200}
+
+        updated_econ, inflation_delta = apply_treasury_lobbying_inflation(
+            econ,
+            400,
+            settings,
+            active_player_count=4,
+        )
+
+        self.assertGreaterEqual(inflation_delta, 0.008)
+        self.assertLessEqual(inflation_delta, 0.05)
+        self.assertGreater(updated_econ['inflation_rate'], econ['inflation_rate'])
 
     def test_successful_welfare_round_raises_inflation(self):
         players = [

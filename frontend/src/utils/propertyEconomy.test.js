@@ -19,6 +19,11 @@ describe('propertyEconomy', () => {
     expect(calculateDevelopmentCost(200, 6, { gov_type: 'minarchism' })).toBe(205);
   });
 
+  it('raises development costs with inflation', () => {
+    expect(calculateDevelopmentCost(200, 1, { gov_type: 'social_democracy', inflation_rate: 0.2 })).toBe(120);
+    expect(calculateDevelopmentCost(200, 2, { gov_type: 'social_democracy', inflation_rate: 0.2 })).toBe(120);
+  });
+
   it('extends the rent schedule beyond the current level in minarchism', () => {
     const property = {
       id: 11,

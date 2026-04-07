@@ -32,12 +32,18 @@ FISCAL_INFLATION_FACTORS = {
         "social_democracy": 0.0065,
         "default": 0.0075,
     },
+    "lobbying_treasury_injection": {
+        "liberal_democracy": 0.036,
+        "social_democracy": 0.034,
+        "default": 0.035,
+    },
 }
 
 FISCAL_INFLATION_CAPS = {
     "welfare_distribution": 0.02,
     "economic_stimulus": 0.025,
     "treasury_injection": 0.015,
+    "lobbying_treasury_injection": 0.05,
 }
 
 
@@ -101,6 +107,19 @@ def resolve_government_type(
     return normalize_government_type(raw_value)
 
 
+def resolve_inflation_rate(
+    game_state: dict | None = None,
+    econ: dict | None = None,
+) -> float:
+    state = game_state or {}
+    economy = econ or state.get("econ") or {}
+    try:
+        inflation_rate = float(economy.get("inflation_rate", 0) or 0)
+    except (TypeError, ValueError):
+        inflation_rate = 0.0
+    return max(0.0, inflation_rate)
+
+
 def get_development_cap(
     game_state: dict | None = None,
     econ: dict | None = None,
@@ -160,12 +179,14 @@ def calculate_development_cost(
     government_type = resolve_government_type(game_state, econ, settings)
 
     if government_type != "minarchism" or level <= MINARCHISM_BASE_HOUSE_LEVEL:
-        return base_cost
+        inflation_multiplier = 1.0 + resolve_inflation_rate(game_state, econ)
+        return round(base_cost * inflation_multiplier, 2)
 
     extra_houses = level - MINARCHISM_BASE_HOUSE_LEVEL
     progressive_factor = extra_houses * (extra_houses + 1) / 2
     cost_multiplier = 1.0 + (MINARCHISM_PROGRESSIVE_COST_STEP * progressive_factor)
-    return round(base_cost * cost_multiplier, 2)
+    inflation_multiplier = 1.0 + resolve_inflation_rate(game_state, econ)
+    return round(base_cost * cost_multiplier * inflation_multiplier, 2)
 
 
 def calculate_development_refund(
@@ -471,6 +492,22 @@ def pay_welfare(players: list[dict], econ: dict, settings: dict | None = None) -
     distribution["treasury_after"] = round(float(econ.get("treasury_balance", 0)), 2)
     distribution["inflation_delta"] = inflation_delta
     return updated, econ, distribution
+
+
+def apply_treasury_lobbying_inflation(
+    econ: dict,
+    amount: float,
+    settings: dict | None = None,
+    *,
+    active_player_count: int = 1,
+) -> tuple[dict, float]:
+    return apply_fiscal_inflation(
+        econ,
+        amount,
+        settings,
+        active_player_count=active_player_count,
+        category="lobbying_treasury_injection",
+    )
 
 
 # ---------------------------------------------------------------------------

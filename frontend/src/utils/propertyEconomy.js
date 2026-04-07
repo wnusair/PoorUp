@@ -38,6 +38,10 @@ export function getDevelopmentCap(economy = {}) {
   return isMinarchismEconomy(economy) ? null : STANDARD_MAX_DEVELOPMENT_LEVEL;
 }
 
+function getInflationMultiplier(economy = {}) {
+  return 1 + Math.max(0, Number(economy?.inflation_rate || 0));
+}
+
 export function isFullyDeveloped(level, economy = {}) {
   const cap = getDevelopmentCap(economy);
   return cap != null && normalizeLevel(level) >= cap;
@@ -59,13 +63,14 @@ export function getRentMultiplier(level, economy = {}) {
 export function calculateDevelopmentCost(basePrice, targetLevel, economy = {}) {
   const baseCost = Math.round((Number(basePrice || 0) * 0.5) * 100) / 100;
   const level = Math.max(1, Number(targetLevel) || 1);
+  const inflationMultiplier = getInflationMultiplier(economy);
   if (!isMinarchismEconomy(economy) || level <= MINARCHISM_BASE_HOUSE_LEVEL) {
-    return baseCost;
+    return Math.round(baseCost * inflationMultiplier * 100) / 100;
   }
 
   const extraHouses = level - MINARCHISM_BASE_HOUSE_LEVEL;
   const progressiveFactor = (extraHouses * (extraHouses + 1)) / 2;
-  return Math.round(baseCost * (1 + (MINARCHISM_PROGRESSIVE_COST_STEP * progressiveFactor)) * 100) / 100;
+  return Math.round(baseCost * (1 + (MINARCHISM_PROGRESSIVE_COST_STEP * progressiveFactor)) * inflationMultiplier * 100) / 100;
 }
 
 export function calculateDevelopmentRefund(basePrice, currentLevel, economy = {}) {

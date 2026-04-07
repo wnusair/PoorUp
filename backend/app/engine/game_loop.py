@@ -14,6 +14,7 @@ from flask import current_app
 from app import db
 from app.engine.economy import (
     apply_fiscal_inflation,
+    apply_treasury_lobbying_inflation,
     compute_gini_coefficient,
     drift_economy,
     apply_income_tax,
@@ -51,7 +52,7 @@ from app.engine.taxation import (
     record_tax_payment,
     record_welfare_distribution,
 )
-from app.engine.social import ensure_social_state, resolve_end_of_round_social_state
+from app.engine.social import ensure_social_state, record_bailout_event, resolve_end_of_round_social_state
 from app.engine.deals import (
     attach_deals_snapshot,
     decrement_round_deadlines,
@@ -1068,12 +1069,11 @@ def resolve_lobbying(game_state: dict, econ: dict, settings: dict, socketio_inst
                 econ["treasury_balance"] = round(float(econ.get("treasury_balance", 0)) + treasury_bonus, 2)
                 econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5)) + stability_bonus), 4)
                 active_player_count = sum(1 for player in game_state.get("players", []) if not player.get("is_bankrupt", False))
-                econ, inflation_delta = apply_fiscal_inflation(
+                econ, inflation_delta = apply_treasury_lobbying_inflation(
                     econ,
                     treasury_bonus,
                     settings,
                     active_player_count=active_player_count,
-                    category="treasury_injection",
                 )
                 effect_summary = (
                     f"Treasury gained ${treasury_bonus:.2f} and stability improved by {stability_bonus * 100:.0f} points."
@@ -1697,6 +1697,13 @@ def _attempt_player_bailout(
     econ["treasury_balance"] = round_money(treasury_before - bailout_amount)
     game_state["econ"] = econ
     game_state, credit_result = credit_player_with_debt_settlement(game_state, player_id, bailout_amount)
+    game_state = record_bailout_event(
+        game_state,
+        player_id=player_id,
+        amount=bailout_amount,
+        treasury_before=treasury_before,
+        treasury_after=econ["treasury_balance"],
+    )
     rescued_player = credit_result.get("player") or player
 
     game_state = log_and_broadcast(

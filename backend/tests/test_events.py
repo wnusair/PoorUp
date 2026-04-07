@@ -294,6 +294,7 @@ class EventEngineTests(unittest.TestCase):
         self.assertFalse(rescued_outcome['bankrupt'])
         self.assertFalse(rescued_state['players'][0].get('is_bankrupt', False))
         self.assertEqual(rescued_state['econ']['treasury_balance'], 750.0)
+        self.assertEqual(rescued_state['social']['bailout_history'][-1]['player_id'], 1)
 
     def test_check_bankruptcy_auto_bails_out_eligible_active_player(self):
         redis_client = FakeRedis()
@@ -331,6 +332,7 @@ class EventEngineTests(unittest.TestCase):
         self.assertEqual(rescued_state['econ']['treasury_balance'], 4781.0)
         self.assertFalse(rescued_state['players'][0].get('is_bankrupt', False))
         self.assertTrue(any(event == 'player_bailed_out' for event, _, _ in socket.emits))
+        self.assertEqual(rescued_state['social']['bailout_history'][-1]['player_id'], 1)
 
 
 if __name__ == '__main__':
