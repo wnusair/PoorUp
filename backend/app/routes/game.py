@@ -27,6 +27,7 @@ from app.engine.game_loop import (
     handle_player_bankrupt,
     check_win_condition,
     log_and_broadcast,
+    release_player_from_jail,
 )
 from app.engine.events import start_auction, resolve_auction
 from app.engine.analytics import record_lobbying_contribution
@@ -50,6 +51,7 @@ from app.engine.deals import (
     create_deal,
     normalize_deal_request_payload,
     reject_deal,
+    request_deal_termination,
     serialize_deal,
     spend_investment_escrow,
     terminate_deal,
@@ -566,7 +568,7 @@ def propose_trade(match_id):
     if not settings.get("trading_enabled", True):
         return jsonify({"error": "Trading is disabled in this game."}), 403
 
-    payload, error = normalize_trade_request_payload(match_id, request.get_json(silent=True) or {})
+    payload, error = normalize_trade_request_payload(match_id, mp.id, gs, request.get_json(silent=True) or {})
     if error:
         return jsonify({"error": error}), 400
 
@@ -588,6 +590,7 @@ def propose_trade(match_id):
         requested_props=payload["requested_props"],
         offered_lobby_pledges=payload["offered_lobby_pledges"],
         requested_lobby_pledges=payload["requested_lobby_pledges"],
+        included_deal_drafts=payload["included_deal_drafts"],
         status="pending",
         created_at=datetime.utcnow(),
     )
@@ -598,11 +601,15 @@ def propose_trade(match_id):
     trade_data["initiator_username"] = player.get("username")
     trade_data["receiver_username"] = receiver.get("username")
     pledge_suffix = " including lobbying pledges" if payload["offered_lobby_pledges"] or payload["requested_lobby_pledges"] else ""
+    deal_suffix = ""
+    if payload["included_deal_drafts"]:
+        count = len(payload["included_deal_drafts"])
+        deal_suffix = f" and {count} attached deal draft{'s' if count != 1 else ''}"
 
     socketio.emit("trade_proposed", trade_data, room=str(match_id))
     log_and_broadcast(
         gs, "trade_proposed",
-        f"{player.get('username')} proposed a trade to {receiver.get('username')}{pledge_suffix}",
+        f"{player.get('username')} proposed a trade to {receiver.get('username')}{pledge_suffix}{deal_suffix}",
         match_id, redis_client, socketio, player_id=mp.id,
     )
     from app.engine.bots import queue_bot_trade_responses
@@ -643,7 +650,7 @@ def respond_to_trade(match_id, trade_id):
         if mp.id != trade.receiver_id:
             return jsonify({"error": "Only the receiver can accept."}), 403
 
-        gs, pledge_results, error = apply_trade_acceptance(gs, trade, match_id)
+        gs, pledge_results, created_deals, error = apply_trade_acceptance(gs, trade, match_id)
         if error:
             return jsonify({"error": error}), 400
 
@@ -673,9 +680,16 @@ def respond_to_trade(match_id, trade_id):
         trade.resolved_at = datetime.utcnow()
         db.session.commit()
 
+        gs = attach_deals_snapshot(gs, match_id)
+
+        activated_deals_suffix = ""
+        if created_deals:
+            count = len(created_deals)
+            activated_deals_suffix = f" and activated {count} bundled deal{'s' if count != 1 else ''}"
+
         gs = log_and_broadcast(
             gs, "trade_completed",
-            f"Trade accepted between {initiator.get('username')} and {receiver.get('username')}",
+            f"Trade accepted between {initiator.get('username')} and {receiver.get('username')}{activated_deals_suffix}",
             match_id, redis_client, socketio,
         )
         for payer_id, entries in ((trade.initiator_id, (pledge_results or {}).get("initiator", [])), (trade.receiver_id, (pledge_results or {}).get("receiver", []))):
@@ -690,7 +704,11 @@ def respond_to_trade(match_id, trade_id):
                     socketio,
                     player_id=payer_id,
                 )
-        socketio.emit("trade_resolved", {"trade": trade.to_dict(), "accepted": True}, room=str(match_id))
+        socketio.emit(
+            "trade_resolved",
+            {"trade": trade.to_dict(), "accepted": True, "created_deals": created_deals},
+            room=str(match_id),
+        )
         persist_game_state(gs, match_id, redis_client)
         broadcast_game_state_snapshot(socketio, match_id, gs)
         return jsonify({"trade": trade.to_dict()}), 200
@@ -721,7 +739,7 @@ def respond_to_trade(match_id, trade_id):
 
         # Create reverse trade
         counter_data = data.get("counter", {})
-        payload, error = normalize_trade_request_payload(match_id, counter_data)
+        payload, error = normalize_trade_request_payload(match_id, mp.id, gs, counter_data)
         if error:
             return jsonify({"error": error}), 400
 
@@ -743,6 +761,7 @@ def respond_to_trade(match_id, trade_id):
             requested_props=payload["requested_props"],
             offered_lobby_pledges=payload["offered_lobby_pledges"],
             requested_lobby_pledges=payload["requested_lobby_pledges"],
+            included_deal_drafts=payload["included_deal_drafts"],
             status="pending",
             created_at=datetime.utcnow(),
         )
@@ -1115,7 +1134,47 @@ def respond_to_deal(match_id, deal_id):
             return jsonify({"error": "Only the proposer can cancel a pending deal."}), 403
         if deal.status == "accepted" and mp.id not in {deal.proposer_id, deal.counterparty_id}:
             return jsonify({"error": "Only deal participants can cancel an active deal."}), 403
+        if deal.status == "accepted":
+            gs, termination_status, error = request_deal_termination(deal, mp.id, gs)
+            if error:
+                return jsonify({"error": error}), 400
+            player_lookup = {player.get("id"): player for player in gs.get("players", [])}
+            deal_payload = serialize_deal(deal, player_lookup)
+            if termination_status == "pending":
+                return jsonify({
+                    "deal": deal_payload,
+                    "state": gs,
+                    "termination_status": termination_status,
+                    "message": "Termination is already awaiting the other party.",
+                }), 200
+
+            if termination_status == "requested":
+                gs = log_and_broadcast(
+                    gs,
+                    "deal_termination_requested",
+                    f"{player_lookup.get(mp.id, {}).get('username', 'Player')} requested to terminate the deal with {deal_payload.get('counterparty_name', 'Player') if mp.id == deal.proposer_id else deal_payload.get('proposer_name', 'Player')}",
+                    match_id,
+                    redis_client,
+                    socketio,
+                    player_id=mp.id,
+                )
+            else:
+                gs = log_and_broadcast(
+                    gs,
+                    "deal_cancelled",
+                    f"Deal cancelled by mutual agreement between {deal_payload.get('proposer_name', 'Player')} and {deal_payload.get('counterparty_name', 'Player')}",
+                    match_id,
+                    redis_client,
+                    socketio,
+                    player_id=mp.id,
+                )
+            persist_game_state(gs, match_id, redis_client)
+            socketio.emit("deal_updated", deal_payload, room=str(match_id))
+            broadcast_game_state_snapshot(socketio, match_id, gs)
+            return jsonify({"deal": deal_payload, "state": gs, "termination_status": termination_status}), 200
+
         gs, _ = cancel_deal(deal, gs)
+        player_lookup = {player.get("id"): player for player in gs.get("players", [])}
         deal_payload = serialize_deal(deal, player_lookup)
         gs = log_and_broadcast(
             gs,
@@ -1217,22 +1276,68 @@ def delete_deal(match_id, deal_id):
         return jsonify({"error": "Deal not found."}), 404
 
     gs = load_game_state(match_id, redis_client)
-    gs, _ = cancel_deal(deal, gs)
+    if deal.status == "proposed":
+        if mp.id != deal.proposer_id:
+            return jsonify({"error": "Only the proposer can cancel a pending deal."}), 403
+        gs, _ = cancel_deal(deal, gs)
+        player_lookup = {player.get("id"): player for player in gs.get("players", [])}
+        deal_payload = serialize_deal(deal, player_lookup)
+        gs = log_and_broadcast(
+            gs,
+            "deal_cancelled",
+            f"Deal cancelled between {deal_payload.get('proposer_name', 'Player')} and {deal_payload.get('counterparty_name', 'Player')}",
+            match_id,
+            redis_client,
+            socketio,
+            player_id=mp.id,
+        )
+        persist_game_state(gs, match_id, redis_client)
+        socketio.emit("deal_updated", deal_payload, room=str(match_id))
+        broadcast_game_state_snapshot(socketio, match_id, gs)
+        return jsonify({"deal": deal_payload, "state": gs, "termination_status": "cancelled"}), 200
+
+    if deal.status != "accepted":
+        return jsonify({"error": "Only pending or accepted deals can be deleted."}), 400
+    if mp.id not in {deal.proposer_id, deal.counterparty_id}:
+        return jsonify({"error": "Only deal participants can cancel an active deal."}), 403
+
+    gs, termination_status, error = request_deal_termination(deal, mp.id, gs)
+    if error:
+        return jsonify({"error": error}), 400
     player_lookup = {player.get("id"): player for player in gs.get("players", [])}
     deal_payload = serialize_deal(deal, player_lookup)
-    gs = log_and_broadcast(
-        gs,
-        "deal_cancelled",
-        f"Deal cancelled between {deal_payload.get('proposer_name', 'Player')} and {deal_payload.get('counterparty_name', 'Player')}",
-        match_id,
-        redis_client,
-        socketio,
-        player_id=mp.id,
-    )
+    if termination_status == "pending":
+        return jsonify({
+            "deal": deal_payload,
+            "state": gs,
+            "termination_status": termination_status,
+            "message": "Termination is already awaiting the other party.",
+        }), 200
+
+    if termination_status == "requested":
+        gs = log_and_broadcast(
+            gs,
+            "deal_termination_requested",
+            f"{player_lookup.get(mp.id, {}).get('username', 'Player')} requested to terminate the deal with {deal_payload.get('counterparty_name', 'Player') if mp.id == deal.proposer_id else deal_payload.get('proposer_name', 'Player')}",
+            match_id,
+            redis_client,
+            socketio,
+            player_id=mp.id,
+        )
+    else:
+        gs = log_and_broadcast(
+            gs,
+            "deal_cancelled",
+            f"Deal cancelled by mutual agreement between {deal_payload.get('proposer_name', 'Player')} and {deal_payload.get('counterparty_name', 'Player')}",
+            match_id,
+            redis_client,
+            socketio,
+            player_id=mp.id,
+        )
     persist_game_state(gs, match_id, redis_client)
     socketio.emit("deal_updated", deal_payload, room=str(match_id))
     broadcast_game_state_snapshot(socketio, match_id, gs)
-    return jsonify({"deal": deal_payload, "state": gs}), 200
+    return jsonify({"deal": deal_payload, "state": gs, "termination_status": termination_status}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -1334,18 +1439,7 @@ def pay_jail_bail(match_id):
     if float(player["balance"]) < bail:
         return jsonify({"error": f"Insufficient funds. Bail is ${bail:.2f}."}), 400
 
-    updated_players = []
-    for p in gs["players"]:
-        p = dict(p)
-        if p["id"] == mp.id:
-            p["balance"] = round(float(p["balance"]) - bail, 2)
-            p["is_jailed"] = False
-            p["jail_turns_remaining"] = 0
-        updated_players.append(p)
-
-    gs = dict(gs)
-    gs["players"] = updated_players
-
+    gs, released_player = release_player_from_jail(gs, mp.id, bail_amount=bail)
     mp.balance = float(mp.balance) - bail
     mp.is_jailed = False
     mp.jail_turns_remaining = 0
@@ -1353,11 +1447,11 @@ def pay_jail_bail(match_id):
 
     log_and_broadcast(
         gs, "jail_released",
-        f"{player.get('username')} paid ${bail:.2f} bail and was released from jail.",
+        f"{player.get('username')} paid ${bail:.2f} bail and may roll immediately.",
         match_id, redis_client, socketio, player_id=mp.id,
     )
     persist_game_state(gs, match_id, redis_client)
-    return jsonify({"state": gs}), 200
+    return jsonify({"state": gs, "player": released_player}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -1379,17 +1473,7 @@ def use_jail_card(match_id):
     if not player.get("has_jail_card", False):
         return jsonify({"error": "You do not have a Get Out of Jail Free card."}), 400
 
-    updated_players = []
-    for p in gs["players"]:
-        p = dict(p)
-        if p["id"] == mp.id:
-            p["is_jailed"] = False
-            p["jail_turns_remaining"] = 0
-            p["has_jail_card"] = False
-        updated_players.append(p)
-
-    gs = dict(gs)
-    gs["players"] = updated_players
+    gs, released_player = release_player_from_jail(gs, mp.id, consume_card=True)
 
     mp.is_jailed = False
     mp.jail_turns_remaining = 0
@@ -1398,8 +1482,8 @@ def use_jail_card(match_id):
 
     log_and_broadcast(
         gs, "jail_released",
-        f"{player.get('username')} used a Get Out of Jail Free card.",
+        f"{player.get('username')} used a Get Out of Jail Free card and may roll immediately.",
         match_id, redis_client, socketio, player_id=mp.id,
     )
     persist_game_state(gs, match_id, redis_client)
-    return jsonify({"state": gs}), 200
+    return jsonify({"state": gs, "player": released_player}), 200

@@ -121,7 +121,9 @@ INCIDENT_THRESHOLDS = {
 CAUSE_LABELS = {
     "low_stability": "Low national stability",
     "inequality": "Owner net worth is far above the table median",
+    "ownership_concentration": "One owner controls too much of the board while rivals are locked out",
     "hostile_lobbying": "Owner is funding hostile anti-relief lobbying from a position of concentrated wealth",
+    "fiscal_backlash": "Citizens are turning against welfare, bailout, and treasury abuse",
     "welfare_shortfall": "Welfare relief is undershooting visible hardship",
     "tax_pressure": "Taxes are amplifying local stress",
     "rent_extraction": "Rent extraction is above the table norm",
@@ -132,6 +134,8 @@ CAUSE_LABELS = {
 
 GRIEVANCE_POLICY_TARGETS = {
     "hostile_lobbying": ["welfare_increase", "economic_stimulus", "rent_control", "stabilization_fund"],
+    "ownership_concentration": ["welfare_increase", "economic_stimulus", "rent_control", "stabilization_fund"],
+    "fiscal_backlash": ["tax_multiplier_increase", "welfare_decrease", "bailout_disable", "stabilization_fund"],
     "welfare_shortfall": ["welfare_increase", "economic_stimulus"],
     "tax_pressure": ["tax_multiplier_decrease"],
     "treasury_distress": ["stabilization_fund", "bailout_enable"],
@@ -146,6 +150,16 @@ GRIEVANCE_ACTIONS = {
         {"type": "negotiate", "label": "Fund local concessions before the backlash compounds", "expected_relief": 18},
         {"type": "lobby", "label": "Reverse the hostile welfare or housing push", "expected_relief": 15},
         {"type": "manage", "label": "Back off extraction pressure until the table cools", "expected_relief": 10},
+    ],
+    "ownership_concentration": [
+        {"type": "manage", "label": "Stop widening the ownership gap before the territory radicalizes", "expected_relief": 8},
+        {"type": "negotiate", "label": "Fund concessions, but expect weaker relief under oligarchic pressure", "expected_relief": 12},
+        {"type": "lobby", "label": "Back welfare, rent control, or stabilization to ease concentrated hardship", "expected_relief": 14},
+    ],
+    "fiscal_backlash": [
+        {"type": "manage", "label": "Stop leaning on bailout and welfare abuse before the public hardens against you", "expected_relief": 14},
+        {"type": "lobby", "label": "Accept tax hikes, welfare cuts, or bailout limits to calm the backlash", "expected_relief": 16},
+        {"type": "support", "label": "Rebuild treasury credibility before the next flashpoint escalates", "expected_relief": 12},
     ],
     "low_stability": [
         {"type": "lobby", "label": "Back stabilization or treasury relief", "expected_relief": 15},
@@ -214,6 +228,13 @@ HOSTILE_LOBBY_TARGETS = {
     "bailout_disable": {"label": "Disable Bailouts", "weight": 0.55, "hardship_sensitive": True},
 }
 
+TREASURY_BACKLASH_THRESHOLD = 500.0
+TREASURY_LOSS_WINDOW = 4
+TREASURY_LOSS_STAGE_STREAK = 2
+BAILOUT_HISTORY_LIMIT = 40
+BAILOUT_BACKLASH_WINDOW = 5
+BAILOUT_ABUSE_THRESHOLD = 3
+
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
@@ -221,6 +242,15 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
 
 def _round(value: float | int | None, digits: int = 2) -> float:
     return round(float(value or 0), digits)
+
+
+def _format_action_list(actions: list[str]) -> str:
+    parts = [str(action).strip() for action in actions if str(action).strip()]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{', '.join(parts[:-1])}, and {parts[-1]}"
 
 
 def active_players(game_state: dict) -> list[dict]:
@@ -237,6 +267,102 @@ def _active_player_ids(game_state: dict) -> set[int]:
 
 def _player_index(game_state: dict) -> dict[int, dict]:
     return {player["id"]: player for player in game_state.get("players", [])}
+
+
+def _ownable_properties(game_state: dict) -> list[dict]:
+    return [
+        prop
+        for prop in game_state.get("properties", [])
+        if prop.get("property_type") in {"property", "transit"}
+    ]
+
+
+def _ownership_pressure_snapshot(
+    game_state: dict,
+    settings: dict | None = None,
+    econ: dict | None = None,
+) -> dict:
+    players = active_players(game_state)
+    player_ids = [int(player["id"]) for player in players if player.get("id") is not None]
+    ownable_properties = _ownable_properties(game_state)
+    total_slots = len(ownable_properties)
+    counts = {player_id: 0 for player_id in player_ids}
+    max_extra_development = {player_id: 0 for player_id in player_ids}
+
+    for prop in ownable_properties:
+        owner_id = prop.get("owner_id")
+        if owner_id not in counts:
+            continue
+        counts[owner_id] += 1
+        dev_level = int(prop.get("dev_level", 0) or 0)
+        max_extra_development[owner_id] = max(max_extra_development[owner_id], max(0, dev_level - 4))
+
+    shares = {
+        player_id: (counts[player_id] / max(1, total_slots)) if total_slots else 0.0
+        for player_id in player_ids
+    }
+    dominant_owner_id = None
+    dominant_share = 0.0
+    if player_ids:
+        dominant_owner_id = max(
+            player_ids,
+            key=lambda candidate: (shares.get(candidate, 0.0), counts.get(candidate, 0)),
+        )
+        dominant_share = shares.get(dominant_owner_id, 0.0)
+
+    government_type = normalize_government_type(
+        (econ or {}).get("gov_type")
+        or (econ or {}).get("government_type")
+        or (settings or {}).get("government_type")
+    )
+
+    owner_metrics = {}
+    for player_id in player_ids:
+        rival_counts = [counts[rival_id] for rival_id in player_ids if rival_id != player_id]
+        rival_shares = [shares[rival_id] for rival_id in player_ids if rival_id != player_id]
+        rival_poverty_ratio = 0.0
+        if rival_counts:
+            rival_poverty_ratio = sum(1 for count in rival_counts if count <= 1) / len(rival_counts)
+
+        board_share = shares.get(player_id, 0.0)
+        ownership_gap = max(0.0, board_share - max(rival_shares or [0.0]))
+        if government_type == "minarchism":
+            share_pressure = clamp((board_share - 0.30) / 0.20, 0.0, 1.0)
+            development_pressure = clamp(max_extra_development.get(player_id, 0) / 4.0, 0.0, 1.0)
+            mass_pressure = clamp(
+                (share_pressure * 0.35)
+                + (development_pressure * 0.45)
+                + (rival_poverty_ratio * 0.20),
+                0.0,
+                1.0,
+            )
+        else:
+            share_pressure = clamp((board_share - 0.35) / 0.25, 0.0, 1.0)
+            gap_pressure = clamp(ownership_gap / 0.35, 0.0, 1.0)
+            mass_pressure = clamp(
+                (share_pressure * 0.45)
+                + (gap_pressure * 0.25)
+                + (rival_poverty_ratio * 0.30),
+                0.0,
+                1.0,
+            )
+
+        owner_metrics[player_id] = {
+            "owned_property_count": counts.get(player_id, 0),
+            "board_share": _round(board_share, 4),
+            "ownership_gap": _round(ownership_gap, 4),
+            "rival_property_poverty_ratio": _round(rival_poverty_ratio, 4),
+            "portfolio_development_pressure": _round(clamp(max_extra_development.get(player_id, 0) / 4.0, 0.0, 1.0), 4),
+            "mass_revolution_pressure": _round(mass_pressure, 4),
+            "share_pressure": _round(share_pressure, 4),
+        }
+
+    return {
+        "total_slots": total_slots,
+        "dominant_owner_id": dominant_owner_id,
+        "dominant_share": _round(dominant_share, 4),
+        "owner_metrics": owner_metrics,
+    }
 
 
 def _owner_label(owner_id: Any, player_lookup: dict[int, dict]) -> str:
@@ -275,6 +401,7 @@ def _coerce_social_state(game_state: dict, *, preserve_property_fields: bool) ->
     social.setdefault("emergency_reforms", [])
     social.setdefault("unionized_property_count", 0)
     social.setdefault("national_flashpoint", {})
+    social.setdefault("bailout_history", [])
 
     properties = {}
     for key, value in (social.get("properties") or {}).items():
@@ -305,6 +432,11 @@ def _coerce_social_state(game_state: dict, *, preserve_property_fields: bool) ->
         for entry in social.get("emergency_reforms", [])
         if isinstance(entry, dict)
     ][-24:]
+    social["bailout_history"] = [
+        dict(entry)
+        for entry in social.get("bailout_history", [])
+        if isinstance(entry, dict)
+    ][-BAILOUT_HISTORY_LIMIT:]
     return social
 
 
@@ -314,6 +446,33 @@ def _social_base(game_state: dict) -> dict:
 
 def _social_snapshot(game_state: dict) -> dict:
     return _coerce_social_state(game_state, preserve_property_fields=True)
+
+
+def record_bailout_event(
+    game_state: dict,
+    *,
+    player_id: int,
+    amount: float,
+    treasury_before: float,
+    treasury_after: float,
+) -> dict:
+    next_state = dict(game_state)
+    social = _social_base(next_state)
+    player = _player_index(next_state).get(player_id) or {}
+    history = list(social.get("bailout_history") or [])
+    history.append(
+        {
+            "round": _game_round(next_state),
+            "player_id": player_id,
+            "username": player.get("username", "Player"),
+            "amount": _round(amount, 2),
+            "treasury_before": _round(treasury_before, 2),
+            "treasury_after": _round(treasury_after, 2),
+        }
+    )
+    social["bailout_history"] = history[-BAILOUT_HISTORY_LIMIT:]
+    next_state["social"] = social
+    return next_state
 
 
 def _tracked_property_entries(game_state: dict) -> dict[str, dict]:
@@ -373,6 +532,12 @@ def _state_from_tension(
     overall_rage: float,
     stability_percent: float,
     mode_profile: dict,
+    *,
+    government_type: str | None = None,
+    owner_board_share: float = 0.0,
+    rival_property_poverty_ratio: float = 0.0,
+    owner_development_pressure: float = 0.0,
+    mass_revolution_pressure: float = 0.0,
 ) -> str | None:
     if tension < INCIDENT_THRESHOLDS["protest"]:
         return None
@@ -382,6 +547,21 @@ def _state_from_tension(
         return "strike"
     if tension < INCIDENT_THRESHOLDS["revolution"]:
         return "uprising"
+    if government_type == "minarchism":
+        if (
+            owner_board_share < 0.40
+            or owner_development_pressure < 0.25
+            or rival_property_poverty_ratio < 0.50
+        ):
+            return "uprising"
+        if (
+            territory_instability >= 82
+            and overall_rage >= max(float(mode_profile.get("revolution_rage_gate", 80) or 80) + 10.0, 92.0)
+            and stability_percent <= min(float(mode_profile.get("revolution_stability_gate", 35) or 35), 28.0)
+            and mass_revolution_pressure >= 0.85
+        ):
+            return "revolution"
+        return "uprising"
     if (
         territory_instability >= 75
         and overall_rage >= float(mode_profile.get("revolution_rage_gate", 80) or 80)
@@ -389,6 +569,27 @@ def _state_from_tension(
     ):
         return "revolution"
     return "uprising"
+
+
+def _state_from_entry(entry: dict, overall_rage: float, stability_percent: float, mode_profile: dict) -> str | None:
+    incident_type = _state_from_tension(
+        float(entry.get("tension", 0) or 0),
+        float(entry.get("territory_instability", 0) or 0),
+        overall_rage,
+        stability_percent,
+        mode_profile,
+        government_type=entry.get("government_type"),
+        owner_board_share=float(entry.get("owner_board_share", 0) or 0),
+        rival_property_poverty_ratio=float(entry.get("rival_property_poverty_ratio", 0) or 0),
+        owner_development_pressure=float(entry.get("owner_development_pressure", 0) or 0),
+        mass_revolution_pressure=float(entry.get("mass_revolution_pressure", 0) or 0),
+    )
+    return _apply_systemic_stage_boost(
+        incident_type,
+        float(entry.get("tension", 0) or 0),
+        int(entry.get("systemic_stage_boost", 0) or 0),
+        allow_revolution=False,
+    )
 
 
 def _watch_state(tension: float, incident_type: str | None) -> str:
@@ -470,15 +671,21 @@ def _macro_metrics(game_state: dict, econ: dict, settings: dict | None = None) -
     government_type = normalize_government_type(
         econ.get("gov_type") or econ.get("government_type") or settings.get("government_type")
     )
+    ownership_pressure = _ownership_pressure_snapshot(game_state, settings, econ)
+    dominant_metrics = dict(
+        (ownership_pressure.get("owner_metrics") or {}).get(ownership_pressure.get("dominant_owner_id")) or {}
+    )
 
     stability = clamp(float(econ.get("stability", 0.7) or 0.7), 0.0, 1.0)
     stability_percent = round(stability * 100)
     gini_norm = clamp(float(compute_gini_coefficient(players) or 0) / 0.75, 0.0, 1.0)
+    inflation_rate = float(econ.get("inflation_rate", 0) or 0)
     inflation_norm = clamp(
-        float(econ.get("inflation_rate", 0) or 0) / float(profile["inflation_ceiling"]),
+        inflation_rate / float(profile["inflation_ceiling"]),
         0.0,
         1.0,
     )
+    hyperinflation_norm = clamp((inflation_rate - 0.10) / 0.40, 0.0, 1.0)
     tax_norm = clamp(
         float(econ.get("tax_multiplier", 0) or 0) / float(profile["tax_ceiling"]),
         0.0,
@@ -511,10 +718,55 @@ def _macro_metrics(game_state: dict, econ: dict, settings: dict | None = None) -
     treasury_balance = float(econ.get("treasury_balance", 0) or 0)
     treasury_target = max(projected_next_round_relief_cost, 400.0)
     treasury_distress = clamp(1.0 - (treasury_balance / max(1.0, treasury_target)), 0.0, 1.0)
+    treasury_backlash = _treasury_backlash_metrics(game_state, treasury_balance)
+    bailout_backlash = _recent_bailout_backlash(game_state)
+    welfare_overreach_norm = 0.0
+    if government_type != "minarchism" and welfare_target_rate > 0:
+        welfare_overreach_norm = clamp(
+            (float(econ.get("welfare_payout", 0) or 0) - welfare_target_rate) / 35.0,
+            0.0,
+            1.0,
+        )
+    welfare_abuse_points = 0.0
+    if government_type != "minarchism":
+        welfare_abuse_points = welfare_overreach_norm * (
+            (hyperinflation_norm * 8.0)
+            + (max(0.0, treasury_distress - 0.20) * 6.0)
+        )
+    ownership_concentration_points = 0.0
+    if dominant_metrics:
+        minimum_share = 0.30 if government_type == "minarchism" else 0.35
+        if float(dominant_metrics.get("board_share", 0) or 0) >= minimum_share:
+            ownership_concentration_points = (
+                float(dominant_metrics.get("mass_revolution_pressure", 0) or 0) * (8.0 if government_type == "minarchism" else 18.0)
+                + float(dominant_metrics.get("share_pressure", 0) or 0) * (4.0 if government_type == "minarchism" else 6.0)
+            )
+
+    bailout_suppression_points = 0.0
+    if government_type != "minarchism" and not bool(econ.get("bailout_enabled", False)) and players_below_target_ratio > 0:
+        bailout_suppression_points = (
+            players_below_target_ratio * 8.0
+        ) * (0.55 + (0.45 * (1.0 - welfare_relief_norm)))
+
+    fiscal_backlash_points = 0.0
+    systemic_stage_boost = 0
+    systemic_stage_boost_reasons = []
+    if government_type != "minarchism":
+        fiscal_backlash_points = (
+            float(treasury_backlash.get("points", 0) or 0)
+            + float(bailout_backlash.get("points", 0) or 0)
+            + welfare_abuse_points
+        )
+        if treasury_backlash.get("stage_boost"):
+            systemic_stage_boost = 1
+            systemic_stage_boost_reasons.append("treasury_loss_streak")
+        if bailout_backlash.get("stage_boost"):
+            systemic_stage_boost = 1
+            systemic_stage_boost_reasons.append("bailout_abuse")
 
     low_stability_points = (1.0 - stability) * 32.0
     inequality_points = gini_norm * 18.0
-    inflation_points = inflation_norm * 12.0
+    inflation_points = (inflation_norm * 12.0) + (hyperinflation_norm * 10.0)
     tax_points = tax_norm * 8.0
     treasury_points = treasury_distress * 10.0
     welfare_gap_points = players_below_target_ratio * 10.0
@@ -527,6 +779,9 @@ def _macro_metrics(game_state: dict, econ: dict, settings: dict | None = None) -
         + tax_points
         + treasury_points
         + welfare_gap_points
+        + ownership_concentration_points
+        + bailout_suppression_points
+        + fiscal_backlash_points
         - welfare_relief_points,
         0.0,
         100.0,
@@ -535,10 +790,12 @@ def _macro_metrics(game_state: dict, econ: dict, settings: dict | None = None) -
     raw_points = {
         "low_stability": low_stability_points,
         "inequality": inequality_points,
+        "ownership_concentration": ownership_concentration_points,
         "inflation_pressure": inflation_points,
         "tax_pressure": tax_points,
         "treasury_distress": treasury_points,
-        "welfare_shortfall": max(0.0, welfare_gap_points + ((1.0 - welfare_relief_norm) * 6.0)),
+        "fiscal_backlash": fiscal_backlash_points,
+        "welfare_shortfall": max(0.0, welfare_gap_points + ((1.0 - welfare_relief_norm) * 6.0) + bailout_suppression_points),
     }
 
     return {
@@ -549,6 +806,11 @@ def _macro_metrics(game_state: dict, econ: dict, settings: dict | None = None) -
         "welfare_target_balance": welfare_target_balance,
         "treasury_target": treasury_target,
         "government_type": government_type,
+        "ownership_pressure": ownership_pressure,
+        "treasury_backlash": treasury_backlash,
+        "bailout_backlash": bailout_backlash,
+        "systemic_stage_boost": systemic_stage_boost,
+        "systemic_stage_boost_reasons": systemic_stage_boost_reasons,
         "mode": mode,
         "mode_profile": profile,
     }
@@ -587,6 +849,132 @@ def _success_history_entries(game_state: dict, current_round: int) -> list[dict]
             continue
         successes.append(dict(entry))
     return successes
+
+
+def _budget_history_entries(game_state: dict, rounds: int = TREASURY_LOSS_WINDOW + 1) -> list[dict]:
+    history = list(((game_state.get("tax_stats") or {}).get("budget_history") or []))
+    normalized = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        normalized.append(
+            {
+                "round": int(entry.get("round", 0) or 0),
+                "treasury_balance": float(entry.get("treasury_balance", 0) or 0),
+            }
+        )
+    normalized.sort(key=lambda item: item["round"])
+    return normalized[-max(1, int(rounds or 1)):]
+
+
+def _treasury_backlash_metrics(game_state: dict, treasury_balance: float) -> dict:
+    history = _budget_history_entries(game_state)
+    loss_rounds = 0
+    loss_streak = 0
+
+    comparisons = list(zip(history, history[1:]))
+    for previous, current in comparisons:
+        if current["treasury_balance"] < previous["treasury_balance"] - 0.01:
+            loss_rounds += 1
+
+    for previous, current in reversed(comparisons):
+        if current["treasury_balance"] < previous["treasury_balance"] - 0.01:
+            loss_streak += 1
+        else:
+            break
+
+    below_threshold = treasury_balance < TREASURY_BACKLASH_THRESHOLD
+    shortage_norm = clamp(
+        (TREASURY_BACKLASH_THRESHOLD - treasury_balance) / max(1.0, TREASURY_BACKLASH_THRESHOLD),
+        0.0,
+        1.0,
+    ) if below_threshold else 0.0
+
+    points = 0.0
+    if below_threshold:
+        points += shortage_norm * 8.0
+        points += min(6.0, loss_rounds * 2.0)
+
+    stage_boost = below_threshold and loss_streak >= TREASURY_LOSS_STAGE_STREAK
+    if stage_boost:
+        points += 6.0
+
+    return {
+        "below_threshold": below_threshold,
+        "loss_rounds": loss_rounds,
+        "loss_streak": loss_streak,
+        "stage_boost": stage_boost,
+        "points": _round(points, 1),
+    }
+
+
+def _recent_bailout_backlash(game_state: dict) -> dict:
+    current_round = _game_round(game_state)
+    lower_round = current_round - BAILOUT_BACKLASH_WINDOW + 1
+    history = [
+        dict(entry)
+        for entry in (_social_base(game_state).get("bailout_history") or [])
+        if isinstance(entry, dict)
+    ]
+
+    counts_by_player: dict[int, int] = {}
+    for entry in history:
+        round_number = int(entry.get("round", 0) or 0)
+        player_id = entry.get("player_id")
+        if player_id is None or round_number < lower_round:
+            continue
+        counts_by_player[int(player_id)] = counts_by_player.get(int(player_id), 0) + 1
+
+    abusive_players = [
+        {"player_id": player_id, "count": count}
+        for player_id, count in counts_by_player.items()
+        if count > BAILOUT_ABUSE_THRESHOLD
+    ]
+    total_recent_bailouts = sum(counts_by_player.values())
+    max_recent_bailouts = max(counts_by_player.values(), default=0)
+
+    points = 0.0
+    if total_recent_bailouts > 0:
+        points += min(6.0, total_recent_bailouts * 1.25)
+    if abusive_players:
+        points += min(10.0, 4.0 + ((max_recent_bailouts - BAILOUT_ABUSE_THRESHOLD) * 3.0))
+
+    return {
+        "players": abusive_players,
+        "total_recent_bailouts": total_recent_bailouts,
+        "max_recent_bailouts": max_recent_bailouts,
+        "stage_boost": bool(abusive_players),
+        "points": _round(points, 1),
+    }
+
+
+def _apply_systemic_stage_boost(
+    incident_type: str | None,
+    tension: float,
+    stage_boost: int,
+    *,
+    allow_revolution: bool = False,
+) -> str | None:
+    remaining = max(0, int(stage_boost or 0))
+    boosted = incident_type
+    if remaining <= 0:
+        return boosted
+
+    if boosted is None:
+        if tension < INCIDENT_THRESHOLDS["watchlist"]:
+            return None
+        boosted = "protest"
+        remaining -= 1
+
+    while remaining > 0 and boosted is not None:
+        candidate = _next_incident_type(boosted)
+        if candidate is None:
+            break
+        if candidate == "revolution" and not allow_revolution:
+            break
+        boosted = candidate
+        remaining -= 1
+    return boosted
 
 
 def _active_policy_targets(game_state: dict, current_round: int) -> set[str]:
@@ -742,7 +1130,16 @@ def _target_incident_type(prop_entry: dict, tension: float, territory_instabilit
     existing = prop_entry.get("incident_type")
     if existing:
         return existing
-    incident_type = _state_from_tension(tension, territory_instability, overall_rage, stability_percent, mode_profile)
+    incident_type = _state_from_entry(
+        {
+            **prop_entry,
+            "tension": tension,
+            "territory_instability": territory_instability,
+        },
+        overall_rage,
+        stability_percent,
+        mode_profile,
+    )
     return incident_type or "protest"
 
 
@@ -787,7 +1184,7 @@ def _eta_to_next_threshold(prev_tension: float, current_tension: float, incident
     return int(math.ceil((next_threshold - current_tension) / max(delta, 1.0)))
 
 
-def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: dict, macro: dict, rent_reference: float, median_net_worth: float, player_lookup: dict[int, dict]) -> dict:
+def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: dict, macro: dict, rent_reference: float, median_net_worth: float, player_lookup: dict[int, dict], ownership_pressure: dict) -> dict:
     prop_id = str(prop.get("id"))
     owner_id = prop.get("owner_id")
     region = prop.get("region")
@@ -795,6 +1192,7 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
     econ = game_state.get("econ", {})
     mode = macro["mode"]
     mode_profile = macro["mode_profile"]
+    government_type = str(macro.get("government_type") or "liberal_democracy")
 
     region_momentum_norm = clamp(
         _recent_incident_count(_social_base(game_state), region=region, rounds_back=3) / 3.0,
@@ -810,10 +1208,20 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
 
     owner_gap_norm = 0.0
     monopoly_bonus = 0.0
+    owner_board_share = 0.0
+    rival_property_poverty_ratio = 0.0
+    portfolio_development_pressure = 0.0
+    mass_revolution_pressure = 0.0
+    local_overdevelopment_norm = 0.0
     if owner_id in player_lookup:
+        owner_metrics = dict((ownership_pressure.get("owner_metrics") or {}).get(owner_id) or {})
         owner_net_worth = max(0.0, float(calculate_net_worth(player_lookup[owner_id], game_state) or 0))
         owner_gap_norm = clamp(((owner_net_worth / max(1.0, median_net_worth)) - 1.0) / 2.0, 0.0, 1.0)
         monopoly_bonus = 1.0 if _has_full_group(prop, game_state) else 0.0
+        owner_board_share = float(owner_metrics.get("board_share", 0) or 0)
+        rival_property_poverty_ratio = float(owner_metrics.get("rival_property_poverty_ratio", 0) or 0)
+        portfolio_development_pressure = float(owner_metrics.get("portfolio_development_pressure", 0) or 0)
+        mass_revolution_pressure = float(owner_metrics.get("mass_revolution_pressure", 0) or 0)
 
     if prop.get("property_type") == "transit":
         projected_rent = float(calculate_transit_rent(owner_id, game_state) or 0)
@@ -821,6 +1229,7 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
     else:
         projected_rent = float(calculate_rent_with_dev(prop, econ, game_state) or 0)
         development_norm = clamp(int(prop.get("dev_level", 0) or 0) / 5.0, 0.0, 1.0)
+        local_overdevelopment_norm = clamp(max(0, int(prop.get("dev_level", 0) or 0) - 4) / 4.0, 0.0, 1.0)
 
     rent_load_norm = clamp(((projected_rent / max(25.0, rent_reference)) - 1.0) / 2.0, 0.0, 1.0)
     tax_norm = clamp(
@@ -841,7 +1250,25 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
         macro=macro,
         game_state=game_state,
     )
+    if government_type == "minarchism":
+        share_pressure = clamp((owner_board_share - 0.30) / 0.20, 0.0, 1.0)
+        ownership_concentration_points = (
+            (share_pressure * 8.0)
+            + (local_overdevelopment_norm * 14.0)
+            + (rival_property_poverty_ratio * 6.0)
+        )
+        if owner_board_share < 0.40 or local_overdevelopment_norm <= 0:
+            ownership_concentration_points *= 0.35
+    else:
+        share_pressure = clamp((owner_board_share - 0.35) / 0.25, 0.0, 1.0)
+        ownership_concentration_points = (
+            (mass_revolution_pressure * 18.0)
+            + (share_pressure * 8.0)
+            + (local_overdevelopment_norm * 4.0)
+        )
+
     cause_points["inequality"] = cause_points.get("inequality", 0.0) + (owner_gap_norm * 18.0)
+    cause_points["ownership_concentration"] = cause_points.get("ownership_concentration", 0.0) + ownership_concentration_points
     cause_points["hostile_lobbying"] = cause_points.get("hostile_lobbying", 0.0) + float(hostile_lobbying.get("points", 0) or 0)
     cause_points["rent_extraction"] = cause_points.get("rent_extraction", 0.0) + (rent_load_norm * 15.0) + (development_norm * 10.0) + (monopoly_bonus * 6.0)
     cause_points["tax_pressure"] = cause_points.get("tax_pressure", 0.0) + (tax_norm * 6.0)
@@ -859,6 +1286,16 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
     }
 
     matching_policy_relief = 1.0 if _has_active_relief(game_state, dominant_grievance, current_round) else 0.0
+    negotiation_relief_multiplier = clamp(
+        1.0 - (mass_revolution_pressure * (0.35 if government_type == "minarchism" else 0.60)),
+        0.35 if government_type != "minarchism" else 0.55,
+        1.0,
+    )
+    policy_relief_multiplier = clamp(
+        1.0 - (mass_revolution_pressure * (0.25 if government_type == "minarchism" else 0.45)),
+        0.40,
+        1.0,
+    )
     territory_instability = 0.0
     if persistent_entry.get("territory_instability") is not None:
         territory_instability = float(persistent_entry.get("territory_instability") or 0)
@@ -887,8 +1324,8 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
         + (tax_norm * 6.0)
         + (region_momentum_norm * 8.0)
         + (repeat_property_norm * 6.0)
-        - (min(1.0, negotiation_coverage) * 12.0)
-        - (matching_policy_relief * 10.0),
+        - (min(1.0, negotiation_coverage) * (12.0 * negotiation_relief_multiplier))
+        - (matching_policy_relief * (10.0 * policy_relief_multiplier)),
         0.0,
         100.0,
     )
@@ -917,6 +1354,14 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
         "reason_breakdown": reason_breakdown,
         "hostile_lobbying_points": _round(hostile_lobbying.get("points", 0), 1),
         "hostile_lobby_targets": list(hostile_lobbying.get("targets") or []),
+        "systemic_stage_boost": int(macro.get("systemic_stage_boost", 0) or 0),
+        "systemic_stage_boost_reasons": list(macro.get("systemic_stage_boost_reasons") or []),
+        "government_type": government_type,
+        "owner_board_share": _round(owner_board_share, 4),
+        "rival_property_poverty_ratio": _round(rival_property_poverty_ratio, 4),
+        "owner_development_pressure": _round(max(local_overdevelopment_norm, portfolio_development_pressure), 4),
+        "ownership_concentration_points": _round(ownership_concentration_points, 1),
+        "mass_revolution_pressure": _round(mass_revolution_pressure, 4),
         "recommended_actions": list(GRIEVANCE_ACTIONS.get(dominant_grievance, GRIEVANCE_ACTIONS["low_stability"]))[:4],
         "recommended_lobby_targets": list(GRIEVANCE_POLICY_TARGETS.get(dominant_grievance, []))[:4],
         "negotiation_target": _round(negotiation_target, 2),
@@ -1042,6 +1487,7 @@ def refresh_social_snapshot(game_state: dict) -> dict:
             rent_reference,
             median_net_worth,
             player_lookup,
+            macro.get("ownership_pressure", {}),
         )
 
     territories = _territory_snapshot(list(property_entries.values()), player_lookup)
@@ -1064,9 +1510,8 @@ def refresh_social_snapshot(game_state: dict) -> dict:
             float(macro["stability_percent"] or 0),
             macro["mode_profile"],
         )
-        entry["next_state"] = entry.get("incident_type") or _state_from_tension(
-            float(entry.get("tension", 0) or 0),
-            float(entry.get("territory_instability", 0) or 0),
+        entry["next_state"] = entry.get("incident_type") or _state_from_entry(
+            entry,
             float(macro["overall_rage"] or 0),
             float(macro["stability_percent"] or 0),
             macro["mode_profile"],
@@ -1143,9 +1588,8 @@ def refresh_social_snapshot(game_state: dict) -> dict:
                 "next_likely_escalation": {
                     "property_id": next_likely.get("property_id") if next_likely else None,
                     "tension": next_likely.get("tension") if next_likely else None,
-                    "next_state": _state_from_tension(
-                        float(next_likely.get("tension", 0) or 0),
-                        float(next_likely.get("territory_instability", 0) or 0),
+                    "next_state": _state_from_entry(
+                        next_likely,
                         float(macro["overall_rage"] or 0),
                         float(macro["stability_percent"] or 0),
                         macro["mode_profile"],
@@ -1234,6 +1678,50 @@ def _apply_solidarity_levy(next_state: dict, owner_id: Any, *, levy_cap: float =
     return next_state, levy
 
 
+def _negotiation_terms(game_state: dict, player: dict, contribution: float) -> dict:
+    econ = dict(game_state.get("econ", {}))
+    government_type = normalize_government_type(
+        econ.get("gov_type") or econ.get("government_type") or game_state.get("settings", {}).get("government_type")
+    )
+    treasury_balance = float(econ.get("treasury_balance", 0) or 0)
+    contribution = _round(contribution, 2)
+
+    if government_type == "minarchism" or treasury_balance >= TREASURY_BACKLASH_THRESHOLD:
+        return {
+            "penalized": False,
+            "treasury_balance": _round(treasury_balance, 2),
+            "efficiency_multiplier": 1.0,
+            "surcharge": 0.0,
+            "total_cost": contribution,
+            "effective_amount": contribution,
+        }
+
+    shortage_norm = clamp(
+        (TREASURY_BACKLASH_THRESHOLD - treasury_balance) / max(1.0, TREASURY_BACKLASH_THRESHOLD),
+        0.0,
+        1.0,
+    )
+    efficiency_multiplier = _round(clamp(0.55 - (shortage_norm * 0.25), 0.30, 0.55), 4)
+    net_worth = max(
+        1.0,
+        float(calculate_net_worth(player, game_state) or 0),
+        float(player.get("balance", 0) or 0),
+    )
+    surcharge_rate = 0.05 + (shortage_norm * 0.07)
+    surcharge_cap = max(40.0, contribution * 4.0)
+    surcharge = _round(min(net_worth * surcharge_rate, surcharge_cap), 2)
+    total_cost = _round(contribution + surcharge, 2)
+    effective_amount = _round(contribution * efficiency_multiplier, 2)
+    return {
+        "penalized": True,
+        "treasury_balance": _round(treasury_balance, 2),
+        "efficiency_multiplier": efficiency_multiplier,
+        "surcharge": surcharge,
+        "total_cost": total_cost,
+        "effective_amount": effective_amount,
+    }
+
+
 def submit_negotiation_contribution(
     game_state: dict,
     *,
@@ -1255,18 +1743,21 @@ def submit_negotiation_contribution(
     contribution = _round(amount, 2)
     if contribution <= 0:
         raise ValueError("Contribution must be positive.")
-    if float(player.get("balance", 0) or 0) < contribution:
-        raise ValueError("Insufficient funds.")
 
     current_round = _game_round(next_state)
     prior_entries = list(prop_entry.get("negotiation_contributions") or [])
     if any(int(entry.get("player_id", 0) or 0) == player_id and int(entry.get("round", 0) or 0) == current_round for entry in prior_entries):
         raise ValueError("You may only contribute to the same incident once per round.")
 
-    efficiency_multiplier = 1.0
+    negotiation_terms = _negotiation_terms(next_state, player, contribution)
+    total_cost = float(negotiation_terms.get("total_cost", contribution) or contribution)
+    if float(player.get("balance", 0) or 0) < total_cost:
+        if negotiation_terms.get("penalized"):
+            raise ValueError("Treasury stress makes negotiations much more expensive right now.")
+        raise ValueError("Insufficient funds.")
 
-    effective_amount = _round(contribution * efficiency_multiplier, 2)
-    next_state, updated_player = spend_player_balance(next_state, player_id, contribution)
+    effective_amount = _round(negotiation_terms.get("effective_amount", contribution), 2)
+    next_state, updated_player = spend_player_balance(next_state, player_id, total_cost)
     social = _social_base(next_state)
     properties = dict(social.get("properties") or {})
     prop_entry = dict(properties.get(prop_key) or prop_entry)
@@ -1276,18 +1767,29 @@ def submit_negotiation_contribution(
         {
             "player_id": player_id,
             "amount": contribution,
+            "actual_cost": _round(total_cost, 2),
+            "net_worth_surcharge": _round(negotiation_terms.get("surcharge", 0), 2),
             "effective_amount": effective_amount,
             "round": current_round,
             "deal_bonus": False,
+            "treasury_penalty": bool(negotiation_terms.get("penalized", False)),
         },
     ]
     properties[prop_key] = prop_entry
     social["properties"] = properties
     next_state["social"] = social
+    if negotiation_terms.get("penalized"):
+        description = (
+            f"{player.get('username', 'Player')} spent ${total_cost:.2f} for only ${effective_amount:.2f} of effective concessions at property #{property_id} while the treasury was under stress."
+        )
+    else:
+        description = (
+            f"{player.get('username', 'Player')} committed ${contribution:.2f} toward local concessions for property #{property_id}."
+        )
     next_state = _append_log(
         next_state,
         "negotiation_pending",
-        f"{player.get('username', 'Player')} committed ${contribution:.2f} toward local concessions for property #{property_id}.",
+        description,
         player_id=player_id,
         property_id=property_id,
         round=current_round,
@@ -1298,6 +1800,10 @@ def submit_negotiation_contribution(
         "property_id": property_id,
         "contribution": contribution,
         "effective_contribution": effective_amount,
+        "total_cost": _round(total_cost, 2),
+        "net_worth_surcharge": _round(negotiation_terms.get("surcharge", 0), 2),
+        "efficiency_multiplier": float(negotiation_terms.get("efficiency_multiplier", 1.0) or 1.0),
+        "treasury_penalized": bool(negotiation_terms.get("penalized", False)),
         "negotiation_committed": _round(result_entry.get("negotiation_committed", 0), 2),
         "negotiation_target": _round(result_entry.get("negotiation_target", 0), 2),
         "remaining_balance": updated_player.get("balance") if updated_player else None,
@@ -1510,6 +2016,11 @@ def _start_revolution(
     region = source_prop.get("region")
     source_owner_id = source_entry.get("former_owner_id") or source_prop.get("owner_id")
     territory_key = _territory_key(source_owner_id, region)
+    government_type = normalize_government_type(
+        next_state.get("econ", {}).get("gov_type")
+        or next_state.get("econ", {}).get("government_type")
+        or next_state.get("settings", {}).get("government_type")
+    )
     revolution_duration = _duration_for_incident(
         "revolution",
         float(social.get("stability_percent", 70) or 70),
@@ -1537,6 +2048,17 @@ def _start_revolution(
 
     if not selected:
         selected = [(float(source_entry.get("tension", 0) or 0), source_prop, source_entry)]
+
+    if government_type == "minarchism":
+        source_candidate = next(
+            (
+                candidate
+                for candidate in selected
+                if int(candidate[1].get("id", 0) or 0) == int(source_property_id)
+            ),
+            None,
+        )
+        selected = [source_candidate] if source_candidate is not None else selected[:1]
 
     selected_ids = []
     updated_props = []
@@ -1714,7 +2236,7 @@ def _clear_incident(next_state: dict, property_id: int, socketio_instance=None, 
     return next_state
 
 
-def _apply_protest_concession(next_state: dict, property_id: int) -> dict:
+def _apply_protest_concession(next_state: dict, property_id: int, incident_type: str = "protest") -> dict:
     social = _social_snapshot(next_state)
     entry = (social.get("properties") or {}).get(str(property_id)) or {}
     dominant = entry.get("dominant_grievance")
@@ -1723,35 +2245,82 @@ def _apply_protest_concession(next_state: dict, property_id: int) -> dict:
     active_effects = list(social.get("active_effects", []))
     prop = next((candidate for candidate in next_state.get("properties", []) if int(candidate.get("id", 0) or 0) == property_id), None)
     target_territory_key = _territory_key(entry.get("owner_id") or (prop or {}).get("owner_id"), entry.get("region") or (prop or {}).get("region"))
+    government_type = normalize_government_type(
+        econ.get("gov_type") or econ.get("government_type") or next_state.get("settings", {}).get("government_type")
+    )
 
-    if dominant == "welfare_shortfall":
-        econ["welfare_payout"] = _round(min(100.0, float(econ.get("welfare_payout", 0) or 0) + 8.0), 2)
-        active_effects.append({"effect_type": "protest_welfare_relief", "field": "welfare_payout", "delta": 8.0, "expires_round": current_round + 3})
-    elif dominant == "tax_pressure":
-        econ["tax_multiplier"] = _round(max(0.0, float(econ.get("tax_multiplier", 0) or 0) - 0.03), 4)
-        active_effects.append({"effect_type": "protest_tax_relief", "field": "tax_multiplier", "delta": 0.03, "expires_round": current_round + 3})
-    elif dominant == "treasury_distress":
-        next_state, _ = _apply_solidarity_levy(next_state, (prop or {}).get("owner_id"))
-        econ = dict(next_state.get("econ", {}))
-    elif dominant == "rent_extraction":
-        active_effects.append(
-            {
-                "effect_type": "territory_rent_control",
-                "target_region": entry.get("region") or (prop or {}).get("region"),
-                "target_territory_key": target_territory_key,
-                "expires_round": current_round + 2,
-            }
-        )
-    elif dominant == "inequality":
-        next_state, _ = _apply_solidarity_levy(next_state, (prop or {}).get("owner_id"), levy_cap=140.0)
-        econ = dict(next_state.get("econ", {}))
-        econ["stability"] = _round(min(1.0, float(econ.get("stability", 0.7) or 0.7) + 0.03), 4)
-    elif dominant == "inflation_pressure":
-        active_effects.append({"effect_type": "inflation_drift_halved", "expires_round": current_round + 2})
+    if government_type == "minarchism":
+        if dominant == "welfare_shortfall":
+            econ["welfare_payout"] = _round(min(100.0, float(econ.get("welfare_payout", 0) or 0) + 8.0), 2)
+            active_effects.append({"effect_type": "protest_welfare_relief", "field": "welfare_payout", "delta": 8.0, "expires_round": current_round + 3})
+        elif dominant == "tax_pressure":
+            econ["tax_multiplier"] = _round(max(0.0, float(econ.get("tax_multiplier", 0) or 0) - 0.03), 4)
+            active_effects.append({"effect_type": "protest_tax_relief", "field": "tax_multiplier", "delta": 0.03, "expires_round": current_round + 3})
+        elif dominant == "treasury_distress":
+            next_state, _ = _apply_solidarity_levy(next_state, (prop or {}).get("owner_id"))
+            econ = dict(next_state.get("econ", {}))
+        elif dominant == "rent_extraction":
+            active_effects.append(
+                {
+                    "effect_type": "territory_rent_control",
+                    "target_region": entry.get("region") or (prop or {}).get("region"),
+                    "target_territory_key": target_territory_key,
+                    "expires_round": current_round + 2,
+                }
+            )
+        elif dominant == "inequality":
+            next_state, _ = _apply_solidarity_levy(next_state, (prop or {}).get("owner_id"), levy_cap=140.0)
+            econ = dict(next_state.get("econ", {}))
+            econ["stability"] = _round(min(1.0, float(econ.get("stability", 0.7) or 0.7) + 0.03), 4)
+        elif dominant == "inflation_pressure":
+            active_effects.append({"effect_type": "inflation_drift_halved", "expires_round": current_round + 2})
+
+        social["active_effects"] = active_effects
+        next_state["social"] = social
+        next_state["econ"] = econ
+        return next_state
+
+    severity_rank = max(1, _sort_key_for_incident(incident_type))
+    levy_caps = {1: 120.0, 2: 180.0, 3: 260.0, 4: 320.0}
+    welfare_cuts = {1: 4.0, 2: 7.5, 3: 10.0, 4: 12.5}
+    actions: list[str] = []
+    owner_id = entry.get("owner_id") or (prop or {}).get("owner_id")
+    player_lookup = _player_index(next_state)
+    owner_name = _owner_label(owner_id, player_lookup)
+    property_name = (prop or {}).get("name") or f"property #{property_id}"
+
+    next_state, levy = _apply_solidarity_levy(next_state, owner_id, levy_cap=levy_caps.get(severity_rank, 120.0))
+    if levy > 0:
+        actions.append(f"imposed a ${levy:.2f} emergency levy on {owner_name}")
+
+    econ = dict(next_state.get("econ", {}))
+    welfare_cut = min(
+        welfare_cuts.get(severity_rank, 4.0),
+        max(0.0, float(econ.get("welfare_payout", 0) or 0)),
+    )
+    if welfare_cut > 0:
+        econ["welfare_payout"] = _round(max(0.0, float(econ.get("welfare_payout", 0) or 0) - welfare_cut), 2)
+        actions.append(f"cut welfare by {welfare_cut:.1f} points")
+
+    treasury_balance = float(econ.get("treasury_balance", 0) or 0)
+    if bool(econ.get("bailout_enabled", False)) and (
+        severity_rank >= 3 or (severity_rank >= 2 and treasury_balance < TREASURY_BACKLASH_THRESHOLD)
+    ):
+        econ["bailout_enabled"] = False
+        actions.append("cut off bailouts")
 
     social["active_effects"] = active_effects
     next_state["social"] = social
     next_state["econ"] = econ
+    if actions:
+        next_state = _append_log(
+            next_state,
+            "government_fear_response",
+            f"Out of fear after {incident_type} at {property_name}, the government {_format_action_list(actions)}.",
+            property_id=property_id,
+            incident_type=incident_type,
+            round=current_round,
+        )
     return next_state
 
 
@@ -1917,12 +2486,31 @@ def _apply_union_spread(next_state: dict, socketio_instance=None, match_id: int 
     social = _social_snapshot(refreshed)
     mode = _normalize_mode(refreshed.get("settings", {}))
     profile = MODE_PROFILE[mode]
+    government_type = normalize_government_type(
+        refreshed.get("econ", {}).get("gov_type")
+        or refreshed.get("econ", {}).get("government_type")
+        or refreshed.get("settings", {}).get("government_type")
+    )
     overall_rage = float(social.get("overall_rage", 0) or 0)
     stability_percent = float(social.get("stability_percent", 70) or 70)
-    if overall_rage < float(profile["union_spread_rage_gate"]) or stability_percent > float(profile["union_spread_stability_gate"]):
-        return refreshed
+    if government_type == "minarchism":
+        strongest_pressure = max(
+            (
+                float(entry.get("mass_revolution_pressure", 0) or 0)
+                for entry in (social.get("properties") or {}).values()
+            ),
+            default=0.0,
+        )
+        if strongest_pressure < 0.90:
+            return refreshed
+        if overall_rage < max(float(profile["union_spread_rage_gate"]), 88.0) or stability_percent > min(float(profile["union_spread_stability_gate"]), 30.0):
+            return refreshed
+        spread_count = 1
+    else:
+        if overall_rage < float(profile["union_spread_rage_gate"]) or stability_percent > float(profile["union_spread_stability_gate"]):
+            return refreshed
+        spread_count = MODE_SPREAD_COUNTS[mode]
 
-    spread_count = MODE_SPREAD_COUNTS[mode]
     current_round = _game_round(refreshed)
     unionized_territories = {
         entry.get("union_territory_key") or _territory_key(entry.get("former_owner_id"), entry.get("region"))
@@ -1969,6 +2557,13 @@ def _apply_union_spread(next_state: dict, socketio_instance=None, match_id: int 
                 continue
             if entry.get("watch_state") not in {"critical_watch", "active_incident"}:
                 continue
+            if government_type == "minarchism":
+                if float(entry.get("owner_development_pressure", 0) or 0) < 0.75:
+                    continue
+                if float(entry.get("owner_board_share", 0) or 0) < 0.50:
+                    continue
+                if float(entry.get("rival_property_poverty_ratio", 0) or 0) < 0.75:
+                    continue
             candidates.append((float(entry.get("tension", 0) or 0), prop_id))
         candidates.sort(key=lambda item: item[0], reverse=True)
         for _, prop_id in candidates[:spread_count]:
@@ -2019,9 +2614,11 @@ def resolve_end_of_round_social_state(game_state: dict, socketio_instance=None, 
             entry["spread_blocked_until_round"] = current_round
 
         effective_tension = max(0.0, float(entry.get("tension", 0) or 0) - relief_points)
-        desired_state = _state_from_tension(
-            effective_tension,
-            float(entry.get("territory_instability", 0) or 0),
+        desired_state = _state_from_entry(
+            {
+                **entry,
+                "tension": effective_tension,
+            },
             float(social.get("overall_rage", 0) or 0),
             float(social.get("stability_percent", 70) or 70),
             mode_profile,
@@ -2125,9 +2722,8 @@ def resolve_end_of_round_social_state(game_state: dict, socketio_instance=None, 
     for prop_id, entry in (social.get("properties") or {}).items():
         if entry.get("incident_type") or entry.get("former_owner_id") is not None:
             continue
-        desired_state = _state_from_tension(
-            float(entry.get("tension", 0) or 0),
-            float(entry.get("territory_instability", 0) or 0),
+        desired_state = _state_from_entry(
+            entry,
             float(social.get("overall_rage", 0) or 0),
             float(social.get("stability_percent", 70) or 70),
             mode_profile,
@@ -2145,8 +2741,8 @@ def resolve_end_of_round_social_state(game_state: dict, socketio_instance=None, 
         if mode != "chaos" and territory_started_counts.get(territory_key, 0) >= 1:
             continue
         next_state = _start_incident(next_state, property_id=prop_id, incident_type=desired_state, socketio_instance=socketio_instance, match_id=match_id)
-        if desired_state == "protest":
-            next_state = _apply_protest_concession(next_state, prop_id)
+        if desired_state in {"protest", "strike", "uprising"}:
+            next_state = _apply_protest_concession(next_state, prop_id, desired_state)
         active_incident_count += 1
         territory_started_counts[territory_key] = territory_started_counts.get(territory_key, 0) + 1
         if entry.get("region"):

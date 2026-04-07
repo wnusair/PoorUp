@@ -252,6 +252,9 @@ def serialize_deal(deal: Deal, player_lookup: dict[int, dict] | None = None) -> 
         "last_updated_at": _deal_timestamp(deal.last_updated_at),
         "proposal_version": int(deal.proposal_version or 1),
         "counter_of_deal_id": deal.counter_of_deal_id,
+        "termination_requested_by_id": deal.termination_requested_by_id,
+        "termination_requested_by_name": (player_lookup.get(deal.termination_requested_by_id) or {}).get("username"),
+        "termination_requested_at": _deal_timestamp(deal.termination_requested_at),
         "clauses": clauses,
     }
 
@@ -665,7 +668,14 @@ def normalize_deal_request_payload(match_id: int, proposer_id: int, game_state: 
     }, None
 
 
-def create_deal(match_id: int, proposer_id: int, payload: dict, *, counter_of_deal_id: int | None = None) -> Deal | None:
+def create_deal(
+    match_id: int,
+    proposer_id: int,
+    payload: dict,
+    *,
+    counter_of_deal_id: int | None = None,
+    commit: bool = True,
+) -> Deal | None:
     proposal_version = 1
     if counter_of_deal_id:
         prior = _safe_first(Deal.query.filter_by(id=counter_of_deal_id, match_id=match_id))
@@ -710,9 +720,13 @@ def create_deal(match_id: int, proposer_id: int, payload: dict, *, counter_of_de
             )
         )
 
-    if not _safe_commit():
-        return None
-    return _safe_first(Deal.query.filter_by(id=deal.id))
+    if commit:
+        if not _safe_commit():
+            return None
+        return _safe_first(Deal.query.filter_by(id=deal.id))
+
+    db.session.flush()
+    return deal
 
 
 def _sync_player_balances_to_db(game_state: dict) -> None:
@@ -742,7 +756,12 @@ def _update_deal_status_from_clauses(deal: Deal) -> None:
     deal.last_updated_at = datetime.utcnow()
 
 
-def accept_deal(deal: Deal, game_state: dict) -> tuple[dict, str | None]:
+def _clear_deal_termination_request(deal: Deal) -> None:
+    deal.termination_requested_by_id = None
+    deal.termination_requested_at = None
+
+
+def accept_deal(deal: Deal, game_state: dict, *, commit: bool = True) -> tuple[dict, str | None]:
     if deal.status != DEAL_STATUS_PROPOSED:
         return game_state, "Deal is no longer pending."
 
@@ -775,18 +794,23 @@ def accept_deal(deal: Deal, game_state: dict) -> tuple[dict, str | None]:
         clause.status = CLAUSE_STATUS_ACTIVE
         clause.activated_at = datetime.utcnow()
 
+    _clear_deal_termination_request(deal)
     deal.status = DEAL_STATUS_ACCEPTED
     deal.accepted_at = datetime.utcnow()
     deal.responded_at = datetime.utcnow()
     deal.last_updated_at = datetime.utcnow()
     _sync_player_balances_to_db(next_state)
-    if not _safe_commit():
-        return game_state, "Failed to activate the deal."
+    if commit:
+        if not _safe_commit():
+            return game_state, "Failed to activate the deal."
+        return attach_deals_snapshot(next_state, deal.match_id), None
 
-    return attach_deals_snapshot(next_state, deal.match_id), None
+    db.session.flush()
+    return next_state, None
 
 
 def reject_deal(deal: Deal) -> bool:
+    _clear_deal_termination_request(deal)
     deal.status = DEAL_STATUS_REJECTED
     deal.responded_at = datetime.utcnow()
     deal.last_updated_at = datetime.utcnow()
@@ -798,11 +822,42 @@ def cancel_deal(deal: Deal, game_state: dict) -> tuple[dict, bool]:
     if deal.status == DEAL_STATUS_ACCEPTED:
         next_state = terminate_deal(deal, next_state, status=DEAL_STATUS_CANCELLED)
     else:
+        _clear_deal_termination_request(deal)
         deal.status = DEAL_STATUS_CANCELLED
         deal.cancelled_at = datetime.utcnow()
         deal.last_updated_at = datetime.utcnow()
         _safe_commit()
     return attach_deals_snapshot(next_state, deal.match_id), True
+
+
+def request_deal_termination(
+    deal: Deal,
+    requester_id: int,
+    game_state: dict,
+) -> tuple[dict, str, str | None]:
+    if deal.status != DEAL_STATUS_ACCEPTED:
+        return game_state, "invalid", "Only accepted deals can be terminated."
+
+    participants = {int(deal.proposer_id or 0), int(deal.counterparty_id or 0)}
+    normalized_requester_id = int(requester_id or 0)
+    if normalized_requester_id not in participants:
+        return game_state, "invalid", "Only deal participants can terminate an active deal."
+
+    existing_requester_id = int(deal.termination_requested_by_id or 0)
+    if existing_requester_id == normalized_requester_id:
+        return attach_deals_snapshot(dict(game_state), deal.match_id), "pending", None
+
+    if existing_requester_id and existing_requester_id in participants:
+        next_state = terminate_deal(deal, dict(game_state), status=DEAL_STATUS_CANCELLED)
+        return attach_deals_snapshot(next_state, deal.match_id), "terminated", None
+
+    deal.termination_requested_by_id = normalized_requester_id
+    deal.termination_requested_at = datetime.utcnow()
+    deal.last_updated_at = datetime.utcnow()
+    if not _safe_commit():
+        return game_state, "error", "Failed to record the termination request."
+
+    return attach_deals_snapshot(dict(game_state), deal.match_id), "requested", None
 
 
 def terminate_deal(deal: Deal, game_state: dict, *, status: str) -> dict:
@@ -812,6 +867,7 @@ def terminate_deal(deal: Deal, game_state: dict, *, status: str) -> dict:
             continue
         next_state = terminate_clause(clause, next_state, status=CLAUSE_STATUS_CANCELLED if status == DEAL_STATUS_CANCELLED else CLAUSE_STATUS_EXPIRED)
 
+    _clear_deal_termination_request(deal)
     deal.status = status
     if status == DEAL_STATUS_CANCELLED:
         deal.cancelled_at = datetime.utcnow()

@@ -55,7 +55,7 @@ export default function HomePage() {
           Poor<span className="text-blue-400">Up</span>
         </h1>
         <p className="text-gray-400 text-sm max-w-sm">
-          A multiplayer economic-political strategy game. Roll dice. Build empires. Topple governments.
+          Corrupt the government, live off welfare, goon to victory...
         </p>
       </div>
 

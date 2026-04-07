@@ -10,7 +10,17 @@ from flask import Flask  # noqa: E402
 
 from app import db  # noqa: E402
 from app.engine import bots, events  # noqa: E402
-from app.engine.social import PROLETARIAT_UNION_ID, _start_revolution, ensure_social_state, submit_negotiation_contribution  # noqa: E402
+from app.engine.social import (  # noqa: E402
+    MODE_PROFILE,
+    PROLETARIAT_UNION_ID,
+    _apply_protest_concession,
+    _macro_metrics,
+    _state_from_entry,
+    _start_revolution,
+    ensure_social_state,
+    resolve_end_of_round_social_state,
+    submit_negotiation_contribution,
+)
 
 
 class FakeRedis:
@@ -37,7 +47,7 @@ def make_player(player_id, username, balance, *, is_bot=False):
         'id': player_id,
         'username': username,
         'balance': balance,
-        'current_position': 1,
+        'current_position': 2,
         'team_id': None,
         'is_bot': is_bot,
         'is_bankrupt': False,
@@ -48,7 +58,7 @@ def make_player(player_id, username, balance, *, is_bot=False):
     }
 
 
-def make_property(property_id, owner_id, *, board_position=1, group_color='#8B4513', base_price=100, dev_level=0):
+def make_property(property_id, owner_id, *, board_position=2, group_color='#8B4513', base_price=100, dev_level=0):
     return {
         'id': property_id,
         'name': f'Property {property_id}',
@@ -143,6 +153,32 @@ class SocialEngineTests(unittest.TestCase):
         self.assertEqual(updated_econ['treasury_balance'], 400.0)
         self.assertTrue(any(entry['event_type'] == 'rent_suspended' for entry in logs))
 
+    def test_jailed_owner_collects_no_rent_when_prison_rent_is_disabled(self):
+        payer = make_player(1, 'Atlas', 500)
+        owner = make_player(2, 'Rival', 600)
+        owner['is_jailed'] = True
+        state = make_state(
+            [payer, owner],
+            [make_property(1, 2, dev_level=2)],
+        )
+        state['settings']['collect_rent_while_jailed'] = False
+
+        updated_player, updated_state, updated_econ, logs = events.resolve_space(
+            payer,
+            state,
+            state['econ'],
+            state['settings'],
+            self.redis,
+            self.socket,
+            12,
+        )
+
+        self.assertEqual(updated_player['balance'], 500)
+        self.assertEqual(updated_state['players'][0]['balance'], 500)
+        self.assertEqual(updated_state['players'][1]['balance'], 600)
+        self.assertEqual(updated_econ['treasury_balance'], 400.0)
+        self.assertTrue(any('does not collect rent' in entry['description'] for entry in logs))
+
     def test_unionized_property_removes_bloc_fee_from_circulation(self):
         payer = make_player(1, 'Atlas', 500)
         former_owner = make_player(2, 'Rival', 600)
@@ -171,10 +207,10 @@ class SocialEngineTests(unittest.TestCase):
         player_one = make_player(1, 'Atlas', 800)
         player_two = make_player(2, 'Rival', 900)
         properties = [
-            make_property(1, 1, board_position=1, base_price=180),
-            make_property(2, 1, board_position=2, base_price=200),
-            make_property(3, 2, board_position=3, base_price=220),
-            {**make_property(4, 1, board_position=4, base_price=190), 'region': 'South Asia'},
+            make_property(1, 1, board_position=2, base_price=180),
+            make_property(2, 1, board_position=4, base_price=200),
+            make_property(3, 2, board_position=9, base_price=220),
+            {**make_property(4, 1, board_position=10, base_price=190), 'region': 'South Asia'},
         ]
         state = make_state(
             [player_one, player_two],
@@ -204,6 +240,117 @@ class SocialEngineTests(unittest.TestCase):
         self.assertEqual(untouched_other_owner['owner_id'], 2)
         self.assertEqual(untouched_other_region['owner_id'], 1)
 
+    def test_concentrated_oligarchy_escalates_beyond_strikes_under_social_democracy(self):
+        wealthy_owner = make_player(1, 'Atlas', 2600)
+        pressured_rival = make_player(2, 'Rival', 40)
+        middle_player = make_player(3, 'Broker', 70)
+        properties = [
+            make_property(1, 1, board_position=2, base_price=180, dev_level=4),
+            make_property(2, 1, board_position=4, base_price=200, dev_level=4),
+            {**make_property(3, 1, board_position=9, base_price=220, dev_level=5), 'region': 'South Asia', 'group_color': '#EC4899'},
+            {**make_property(4, 1, board_position=10, base_price=240, dev_level=5), 'region': 'South Asia', 'group_color': '#EC4899'},
+            {**make_property(5, 1, board_position=12, base_price=260, dev_level=4), 'region': 'Middle East', 'group_color': '#8B5CF6'},
+            {**make_property(6, 2, board_position=13, base_price=140, dev_level=0), 'region': 'Middle East', 'group_color': '#8B5CF6'},
+        ]
+        state = make_state([wealthy_owner, pressured_rival, middle_player], properties)
+        state['econ'].update({
+            'stability': 0.28,
+            'inflation_rate': 0.60,
+            'welfare_payout': 8.0,
+            'bailout_enabled': False,
+        })
+        state['lobbying_stats'] = {
+            'player_totals': {},
+            'resolved_history': [],
+            'policy_pools': {
+                'welfare_decrease': {
+                    'target': 'welfare_decrease',
+                    'policy_name': 'Welfare Cuts',
+                    'target_stat': 'welfare_decrease',
+                    'cost_hint': 250,
+                    'pool_total': 250,
+                    'contributors': [{'player_id': 1, 'username': 'Atlas', 'contribution': 250}],
+                },
+                'bailout_disable': {
+                    'target': 'bailout_disable',
+                    'policy_name': 'Disable Bailouts',
+                    'target_stat': 'bailout_disable',
+                    'cost_hint': 250,
+                    'pool_total': 250,
+                    'contributors': [{'player_id': 1, 'username': 'Atlas', 'contribution': 250}],
+                },
+            },
+        }
+
+        pressured_state = ensure_social_state(state)
+        hotspot = pressured_state['social']['properties']['1']
+
+        self.assertGreaterEqual(hotspot['tension'], 80.0)
+        self.assertIn(hotspot['next_state'], {'uprising', 'revolution'})
+
+        resolved_state = resolve_end_of_round_social_state(pressured_state)
+        active_types = {entry['incident_type'] for entry in resolved_state['social']['active_incidents']}
+        self.assertTrue(active_types.intersection({'uprising', 'revolution'}))
+
+    def test_minarchism_overdevelopment_stays_local_and_avoids_mass_revolution(self):
+        owner = make_player(1, 'Atlas', 1800)
+        rival = make_player(2, 'Rival', 90)
+        broker = make_player(3, 'Broker', 120)
+        properties = [
+            make_property(1, 1, board_position=2, base_price=180, dev_level=6),
+            make_property(2, 1, board_position=4, base_price=200, dev_level=1),
+            {**make_property(3, 2, board_position=9, base_price=120, dev_level=0), 'region': 'South Asia', 'group_color': '#EC4899'},
+            {**make_property(4, None, board_position=10, base_price=140, dev_level=0), 'region': 'South Asia', 'group_color': '#EC4899'},
+            {**make_property(5, None, board_position=12, base_price=220, dev_level=0), 'region': 'Middle East', 'group_color': '#8B5CF6'},
+        ]
+        state = make_state([owner, rival, broker], properties)
+        state['settings']['government_type'] = 'minarchism'
+        state['econ'].update({
+            'gov_type': 'minarchism',
+            'government_type': 'minarchism',
+            'stability': 0.26,
+            'inflation_rate': 0.34,
+            'welfare_payout': 0.0,
+            'bailout_enabled': False,
+        })
+
+        minarchist_state = ensure_social_state(state)
+        hotspot = minarchist_state['social']['properties']['1']
+
+        self.assertGreaterEqual(hotspot['tension'], 65.0)
+        self.assertIn(hotspot['next_state'], {'strike', 'uprising', 'revolution'})
+
+        minarchist_state['social']['overall_rage'] = 96.0
+        minarchist_state['social']['stability_percent'] = 24
+        minarchist_state['social']['properties']['1'].update({
+            'tension': 96.0,
+            'watch_state': 'active_incident',
+            'territory_instability': 88.0,
+            'government_type': 'minarchism',
+            'owner_board_share': 0.40,
+            'rival_property_poverty_ratio': 1.0,
+            'owner_development_pressure': 1.0,
+            'mass_revolution_pressure': 1.0,
+        })
+        minarchist_state['social']['properties']['2'].update({
+            'tension': 94.0,
+            'watch_state': 'critical_watch',
+            'territory_instability': 88.0,
+            'government_type': 'minarchism',
+            'owner_board_share': 0.40,
+            'rival_property_poverty_ratio': 1.0,
+            'owner_development_pressure': 1.0,
+            'mass_revolution_pressure': 1.0,
+        })
+
+        next_state, seized_ids = _start_revolution(minarchist_state, source_property_id=1)
+
+        self.assertEqual(set(seized_ids), {1})
+        seized_property = next(prop for prop in next_state['properties'] if prop['id'] == 1)
+        untouched_property = next(prop for prop in next_state['properties'] if prop['id'] == 2)
+        self.assertEqual(seized_property['owner_id'], PROLETARIAT_UNION_ID)
+        self.assertEqual(untouched_property['owner_id'], 1)
+
     def test_negotiation_contribution_updates_social_commitment(self):
         player = make_player(1, 'Atlas', 500)
         rival = make_player(2, 'Rival', 600)
@@ -222,6 +369,7 @@ class SocialEngineTests(unittest.TestCase):
                 },
             },
         )
+        state['econ']['treasury_balance'] = 800.0
 
         next_state, result = submit_negotiation_contribution(
             state,
@@ -237,6 +385,146 @@ class SocialEngineTests(unittest.TestCase):
         self.assertGreaterEqual(result['negotiation_committed'], 40.0)
         self.assertGreaterEqual(updated_entry['negotiation_committed'], 40.0)
         self.assertEqual(updated_player['balance'], 460.0)
+
+    def test_low_treasury_negotiation_costs_more_for_less_relief(self):
+        player = make_player(1, 'Atlas', 500)
+        rival = make_player(2, 'Rival', 600)
+        state = make_state(
+            [player, rival],
+            [make_property(1, 1, dev_level=1, base_price=180)],
+            social={
+                'properties': {
+                    '1': {
+                        'incident_type': 'protest',
+                        'remaining_rounds': 2,
+                        'negotiation_target': 100.0,
+                        'negotiation_committed': 0.0,
+                        'dominant_grievance': 'fiscal_backlash',
+                    },
+                },
+            },
+        )
+        state['settings']['government_type'] = 'social_democracy'
+        state['econ'].update({
+            'gov_type': 'social_democracy',
+            'government_type': 'social_democracy',
+            'treasury_balance': 350.0,
+        })
+
+        next_state, result = submit_negotiation_contribution(
+            state,
+            property_id=1,
+            player_id=1,
+            amount=40.0,
+        )
+
+        updated_player = next(player for player in next_state['players'] if player['id'] == 1)
+
+        self.assertTrue(result['treasury_penalized'])
+        self.assertGreater(result['total_cost'], 40.0)
+        self.assertLess(result['effective_contribution'], 40.0)
+        self.assertEqual(updated_player['balance'], round(500.0 - result['total_cost'], 2))
+
+    def test_treasury_loss_backlash_activates_stage_boost(self):
+        owner = make_player(1, 'Atlas', 900)
+        rival = make_player(2, 'Rival', 120)
+        state = make_state([owner, rival], [make_property(1, 1, dev_level=2, base_price=180)])
+        state['current_round'] = 6
+        state['settings']['government_type'] = 'social_democracy'
+        state['econ'].update({
+            'gov_type': 'social_democracy',
+            'government_type': 'social_democracy',
+            'treasury_balance': 420.0,
+            'inflation_rate': 0.18,
+            'welfare_payout': 72.0,
+            'bailout_enabled': True,
+        })
+        state['tax_stats'] = {
+            'player_totals': {},
+            'totals': {},
+            'last_welfare_distribution': {},
+            'budget_history': [
+                {'round': 1, 'treasury_balance': 1500.0},
+                {'round': 2, 'treasury_balance': 1120.0},
+                {'round': 3, 'treasury_balance': 860.0},
+                {'round': 4, 'treasury_balance': 610.0},
+                {'round': 5, 'treasury_balance': 420.0},
+            ],
+        }
+
+        macro = _macro_metrics(state, state['econ'], state['settings'])
+
+        self.assertEqual(macro['systemic_stage_boost'], 1)
+        self.assertIn('treasury_loss_streak', macro['systemic_stage_boost_reasons'])
+        self.assertGreater(macro['macro_points']['fiscal_backlash'], 0)
+
+    def test_repeated_bailouts_trigger_stage_boost(self):
+        owner = make_player(1, 'Atlas', 900)
+        rival = make_player(2, 'Rival', 120)
+        state = make_state([owner, rival], [make_property(1, 1, dev_level=1, base_price=180)])
+        state['current_round'] = 6
+        state['settings']['government_type'] = 'social_democracy'
+        state['econ'].update({
+            'gov_type': 'social_democracy',
+            'government_type': 'social_democracy',
+            'treasury_balance': 900.0,
+            'inflation_rate': 0.14,
+            'welfare_payout': 68.0,
+            'bailout_enabled': True,
+        })
+        state['social'] = {
+            'bailout_history': [
+                {'round': 2, 'player_id': 1, 'amount': 250.0},
+                {'round': 3, 'player_id': 1, 'amount': 240.0},
+                {'round': 4, 'player_id': 1, 'amount': 230.0},
+                {'round': 6, 'player_id': 1, 'amount': 220.0},
+            ],
+        }
+
+        macro = _macro_metrics(state, state['econ'], state['settings'])
+
+        self.assertEqual(macro['systemic_stage_boost'], 1)
+        self.assertIn('bailout_abuse', macro['systemic_stage_boost_reasons'])
+        self.assertGreater(macro['bailout_backlash']['max_recent_bailouts'], 3)
+
+    def test_systemic_stage_boost_avoids_auto_revolution(self):
+        protest_entry = {
+            'tension': 52.0,
+            'territory_instability': 58.0,
+            'government_type': 'social_democracy',
+            'systemic_stage_boost': 1,
+        }
+        uprising_entry = {
+            'tension': 84.0,
+            'territory_instability': 72.0,
+            'government_type': 'social_democracy',
+            'systemic_stage_boost': 1,
+        }
+
+        self.assertEqual(_state_from_entry(protest_entry, 72.0, 42.0, MODE_PROFILE['standard']), 'strike')
+        self.assertEqual(_state_from_entry(uprising_entry, 78.0, 38.0, MODE_PROFILE['standard']), 'uprising')
+
+    def test_unrest_can_force_owner_taxes_welfare_cuts_and_bailout_shutdown(self):
+        owner = make_player(1, 'Atlas', 900)
+        rival = make_player(2, 'Rival', 600)
+        state = make_state([owner, rival], [make_property(1, 1, dev_level=2, base_price=180)])
+        state['settings']['government_type'] = 'social_democracy'
+        state['econ'].update({
+            'gov_type': 'social_democracy',
+            'government_type': 'social_democracy',
+            'welfare_payout': 66.0,
+            'treasury_balance': 420.0,
+            'bailout_enabled': True,
+        })
+
+        prepared_state = ensure_social_state(state)
+        updated_state = _apply_protest_concession(prepared_state, 1, 'uprising')
+        updated_owner = next(player for player in updated_state['players'] if player['id'] == 1)
+
+        self.assertLess(updated_owner['balance'], owner['balance'])
+        self.assertLess(updated_state['econ']['welfare_payout'], prepared_state['econ']['welfare_payout'])
+        self.assertFalse(updated_state['econ']['bailout_enabled'])
+        self.assertTrue(any('out of fear' in entry['description'].lower() for entry in updated_state.get('log_buffer', [])))
 
     def test_bot_prefers_negotiation_for_owned_incident(self):
         player = make_player(1, 'Atlas', 700, is_bot=True)
@@ -280,9 +568,9 @@ class SocialEngineTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 1200, is_bot=True)
         rival = make_player(2, 'Rival', 900)
         properties = [
-            make_property(1, 1, board_position=1, group_color='#8B4513', base_price=60),
-            make_property(2, 1, board_position=2, group_color='#8B4513', base_price=60),
-            make_property(3, 1, board_position=4, group_color='#8B4513', base_price=100),
+            make_property(1, 1, board_position=2, group_color='#8B4513', base_price=60),
+            make_property(2, 1, board_position=4, group_color='#8B4513', base_price=60),
+            make_property(3, 1, board_position=9, group_color='#8B4513', base_price=100),
         ]
         state = make_state(
             [player, rival],

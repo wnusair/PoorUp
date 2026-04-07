@@ -8,8 +8,6 @@ import SidebarMenuStack from './SidebarMenuStack';
 import StabilityWidget from './StabilityWidget';
 import TradeQueueWidget from './TradeQueueWidget';
 import DealsWidget from './DealsWidget';
-import GameLog from '../Log/GameLog';
-import TradeFeed from '../Trade/TradeFeed';
 
 // Modals
 import PropertyModal from '../Modals/PropertyModal';
@@ -87,23 +85,14 @@ export default function GameLayout({ socketActions, myPlayerId }) {
 
       {/* Main content area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: Board + Log */}
-        <div className="flex flex-col flex-1 overflow-hidden">
-          {/* Board area — scales to fill */}
-          <div className="flex-1 overflow-hidden bg-gray-950">
+        {/* Left: Board */}
+        <div className="flex flex-1 overflow-hidden">
+          <div className="relative flex-1 overflow-hidden bg-gray-950">
             <GameBoard
               players={players}
               properties={properties}
               onSpaceClick={handleSpaceClick}
             />
-          </div>
-
-          {/* Bottom: log + trade feed */}
-          <div className="h-48 border-t border-gray-700 flex flex-col overflow-hidden">
-            <TradeFeed />
-            <div className="flex-1 overflow-hidden">
-              <GameLog />
-            </div>
           </div>
         </div>
 

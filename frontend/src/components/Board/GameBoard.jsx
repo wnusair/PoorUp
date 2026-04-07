@@ -1,10 +1,11 @@
-import { useRef, useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import BoardSpace from './BoardSpace';
+import CenterLogDock from '../Log/CenterLogDock';
 import { BOARD_SPACES, needsDarkText } from '../../utils/constants';
 import { useGameStore } from '../../hooks/useGameState';
 
 /**
- * Board layout — 48 spaces, LANDSCAPE orientation (wider than tall).
+ * Board layout — sparse board positions with retired top-row spaces removed.
  *
  * Corners:
  *   pos  0 = START       → top-left
@@ -12,11 +13,11 @@ import { useGameStore } from '../../hooks/useGameState';
  *   pos 20 = FREE SPACE  → bottom-right
  *   pos 30 = GO TO JAIL  → top-right
  *
- * Clockwise movement:
- *   Top row    (L→R): 0, [47..31], 30   — 17 inner spaces
- *   Right col  (T→B): [29..21]          — 9 inner spaces
- *   Bottom row (L→R): 11, [12..19], 20  — 8 inner spaces
- *   Left col   (T→B): [1..10]           — 10 inner spaces
+ * Visual layout:
+ *   Top row    (L→R): 0, sparse [47..31], 30   — weighted widths keep property cards readable
+ *   Right col  (T→B): sparse live spaces from 30 toward 20
+ *   Bottom row (L→R): 11, [12..19], 20
+ *   Left col   (T→B): sparse live spaces from 0 toward 11
  */
 
 const spaceByPos = Object.fromEntries(BOARD_SPACES.map((s) => [s.position, s]));
@@ -24,80 +25,248 @@ const spaceByPos = Object.fromEntries(BOARD_SPACES.map((s) => [s.position, s]));
 const CORNER_POSITIONS = new Set([0, 11, 20, 30]);
 
 // Top row: L→R, corners 0 (TL) and 30 (TR), inner = 47 down to 31
-const topRow = [0, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30];
-// Right col inner: T→B, 29 down to 21
-const rightColInner = [29, 28, 27, 26, 25, 24, 23, 22, 21];
+const topRow = [0, 47, 40, 39, 38, 37, 36, 34, 32, 31, 30];
+const topRowInner = topRow.slice(1, -1);
+// Right col inner: T→B, surviving spaces between 30 and 20
+const rightColInner = [27, 26, 25, 24, 23, 22];
 // Bottom row: L→R, corners 11 (BL) and 20 (BR), inner = 12 up to 19
 const bottomRow = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
-// Left col inner: T→B, 1 up to 10
-const leftColInner = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const bottomRowInner = bottomRow.slice(1, -1);
+// Left col inner: T→B, surviving spaces between 0 and 11
+const leftColInner = [2, 4, 5, 6, 9, 10];
+const renderOrder = [...topRow, ...rightColInner, ...bottomRow, ...leftColInner];
 
-// Cell sizing
-const CORNER = 72;
-const EDGE_W = 46;  // width of each inner cell on the top row (17 cells)
-const EDGE_H = 60;  // height of each inner cell on the left col (10 cells)
+const BOARD_INSET = 10;
 
-const TOP_INNER = topRow.length - 2;      // 17
-const BOTTOM_INNER = bottomRow.length - 2; // 8
-const LEFT_INNER = leftColInner.length;    // 10
-const RIGHT_INNER = rightColInner.length;  // 9
+const CORNER_REFERENCE = 90;
+const TOP_EDGE_REFERENCE = 58;
+const SIDE_EDGE_REFERENCE = 54;
 
-// Board dimensions are determined by the longest sides
-const innerW = TOP_INNER * EDGE_W;        // 782px — width for inner area
-const innerH = LEFT_INNER * EDGE_H;       // 600px — height for inner area
-const totalW = CORNER + innerW + CORNER;  // 926px
-const totalH = CORNER + innerH + CORNER;  // 744px
+const LEFT_INNER = leftColInner.length;
+const RIGHT_INNER = rightColInner.length;
 
-// Bottom row and right col fill the same inner dimensions at different cell sizes
-const bottomCellW = innerW / BOTTOM_INNER; // 97.75px each
-const rightCellH = innerH / RIGHT_INNER;   // 66.67px each
+const innerW = topRowInner.length * TOP_EDGE_REFERENCE;
+const innerH = LEFT_INNER * SIDE_EDGE_REFERENCE;
+const totalW = CORNER_REFERENCE + innerW + CORNER_REFERENCE;
+const totalH = CORNER_REFERENCE + innerH + CORNER_REFERENCE;
 
-const TOKEN_SIZE = 30; // px, unscaled
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
 
-/**
- * Returns the center pixel coordinate of a board space on the unscaled board.
- */
-function getSpaceCenter(pos) {
-  // TL corner: 0
-  if (pos === 0) return { x: CORNER / 2, y: CORNER / 2 };
-  // Left col: 1–10 (top→bottom)
-  if (pos >= 1 && pos <= 10)
-    return { x: CORNER / 2, y: CORNER + (pos - 1) * EDGE_H + EDGE_H / 2 };
-  // BL corner: 11
-  if (pos === 11) return { x: CORNER / 2, y: totalH - CORNER / 2 };
-  // Bottom row inner: 12–19 (left→right)
-  if (pos >= 12 && pos <= 19)
-    return { x: CORNER + (pos - 12) * bottomCellW + bottomCellW / 2, y: totalH - CORNER / 2 };
-  // BR corner: 20
-  if (pos === 20) return { x: totalW - CORNER / 2, y: totalH - CORNER / 2 };
-  // Right col: 21–29 (29 is near top, 21 is near bottom)
-  if (pos >= 21 && pos <= 29) {
-    const rowIndex = 29 - pos; // 0 for pos=29, 8 for pos=21
-    return { x: totalW - CORNER / 2, y: CORNER + rowIndex * rightCellH + rightCellH / 2 };
+function getTrackWeight(position) {
+  const type = spaceByPos[position]?.type;
+
+  switch (type) {
+    case 'property':
+      return 1.26;
+    case 'transit':
+      return 0.7;
+    case 'chance':
+    case 'community_chest':
+    case 'tax':
+      return 0.5;
+    default:
+      return 1;
   }
-  // TR corner: 30
-  if (pos === 30) return { x: totalW - CORNER / 2, y: CORNER / 2 };
-  // Top row inner: 31–47 (DOM left→right order: 47, 46, ..., 31)
-  if (pos >= 31 && pos <= 47) {
-    const cellIndex = 47 - pos; // 0 for pos=47 (leftmost inner), 16 for pos=31
-    return { x: CORNER + cellIndex * EDGE_W + EDGE_W / 2, y: CORNER / 2 };
+}
+
+function distributeWeightedWidths(positions, totalWidth) {
+  const weights = positions.map((position) => getTrackWeight(position));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+  const widths = positions.map((_, index) => totalWidth * (weights[index] / totalWeight));
+
+  if (!widths.length) {
+    return widths;
   }
-  return { x: 0, y: 0 };
+
+  const usedWidth = widths.slice(0, -1).reduce((sum, width) => sum + width, 0);
+  widths[widths.length - 1] = Math.max(1, totalWidth - usedWidth);
+  return widths;
+}
+
+function buildBoardMetrics(containerWidth, containerHeight) {
+  const availableWidth = Math.max(320, containerWidth - (BOARD_INSET * 2));
+  const availableHeight = Math.max(260, containerHeight - (BOARD_INSET * 2));
+  const preferredCorner = Math.min(
+    availableWidth / (totalW / CORNER_REFERENCE),
+    availableHeight / (totalH / CORNER_REFERENCE),
+  );
+  const desiredCorner = Math.max(
+    preferredCorner * 1.12,
+    Math.min(availableHeight * 0.17, availableWidth * 0.105),
+  );
+  const maxCorner = Math.max(52, Math.min(126, (availableHeight / 2) - 24, (availableWidth / 2) - 40));
+  const corner = clamp(desiredCorner, 52, maxCorner);
+  const boardWidth = availableWidth;
+  const boardHeight = availableHeight;
+  const responsiveInnerWidth = Math.max(1, boardWidth - (corner * 2));
+  const responsiveInnerHeight = Math.max(1, boardHeight - (corner * 2));
+  const topCellWidths = distributeWeightedWidths(topRowInner, responsiveInnerWidth);
+  const bottomCellWidths = distributeWeightedWidths(bottomRowInner, responsiveInnerWidth);
+  const leftCellH = responsiveInnerHeight / LEFT_INNER;
+  const rightCellH = responsiveInnerHeight / RIGHT_INNER;
+  const narrowestHorizontalCell = Math.min(
+    ...topCellWidths,
+    ...bottomCellWidths,
+  );
+  const tokenSize = clamp(
+    Math.min(corner * 0.38, narrowestHorizontalCell * 0.42, Math.min(leftCellH, rightCellH) * 0.42),
+    20,
+    34,
+  );
+
+  return {
+    inset: BOARD_INSET,
+    boardWidth,
+    boardHeight,
+    corner,
+    innerWidth: responsiveInnerWidth,
+    innerHeight: responsiveInnerHeight,
+    topCellWidths,
+    bottomCellWidths,
+    leftCellH,
+    rightCellH,
+    tokenSize,
+  };
+}
+
+function buildSpaceRects(metrics) {
+  const rects = {
+    0: { left: 0, top: 0, width: metrics.corner, height: metrics.corner, orientation: 'top' },
+    11: { left: 0, top: metrics.boardHeight - metrics.corner, width: metrics.corner, height: metrics.corner, orientation: 'bottom' },
+    20: { left: metrics.boardWidth - metrics.corner, top: metrics.boardHeight - metrics.corner, width: metrics.corner, height: metrics.corner, orientation: 'bottom' },
+    30: { left: metrics.boardWidth - metrics.corner, top: 0, width: metrics.corner, height: metrics.corner, orientation: 'top' },
+  };
+
+  let topOffset = metrics.corner;
+  topRowInner.forEach((position, index) => {
+    const width = metrics.topCellWidths[index];
+    rects[position] = {
+      left: topOffset,
+      top: 0,
+      width,
+      height: metrics.corner,
+      orientation: 'top',
+    };
+    topOffset += width;
+  });
+
+  let bottomOffset = metrics.corner;
+  bottomRowInner.forEach((position, index) => {
+    const width = metrics.bottomCellWidths[index];
+    rects[position] = {
+      left: bottomOffset,
+      top: metrics.boardHeight - metrics.corner,
+      width,
+      height: metrics.corner,
+      orientation: 'bottom',
+    };
+    bottomOffset += width;
+  });
+
+  leftColInner.forEach((position, index) => {
+    rects[position] = {
+      left: 0,
+      top: metrics.corner + (index * metrics.leftCellH),
+      width: metrics.corner,
+      height: metrics.leftCellH,
+      orientation: 'left',
+    };
+  });
+
+  rightColInner.forEach((position, index) => {
+    rects[position] = {
+      left: metrics.boardWidth - metrics.corner,
+      top: metrics.corner + (index * metrics.rightCellH),
+      width: metrics.corner,
+      height: metrics.rightCellH,
+      orientation: 'right',
+    };
+  });
+
+  return rects;
+}
+
+function getTokenAnchor(position, rect, tokenSize) {
+  if (!rect) {
+    return { x: 0, y: 0, stackMode: 'diagonal' };
+  }
+
+  const margin = Math.max(4, tokenSize * 0.2);
+  const radius = tokenSize / 2;
+
+  if (position === 0 || position === 11) {
+    return {
+      x: rect.left + margin + radius,
+      y: rect.top + margin + radius,
+      stackMode: 'diagonal',
+    };
+  }
+
+  if (position === 20 || position === 30) {
+    return {
+      x: rect.left + rect.width - margin - radius,
+      y: rect.top + margin + radius,
+      stackMode: 'diagonal',
+    };
+  }
+
+  switch (rect.orientation) {
+    case 'top':
+    case 'bottom':
+      return {
+        x: rect.left + (rect.width / 2),
+        y: rect.top + margin + radius,
+        stackMode: 'horizontal',
+      };
+    case 'left':
+      return {
+        x: rect.left + margin + radius,
+        y: rect.top + margin + radius,
+        stackMode: 'vertical',
+      };
+    case 'right':
+      return {
+        x: rect.left + rect.width - margin - radius,
+        y: rect.top + margin + radius,
+        stackMode: 'vertical',
+      };
+    default:
+      return {
+        x: rect.left + (rect.width / 2),
+        y: rect.top + (rect.height / 2),
+        stackMode: 'diagonal',
+      };
+  }
 }
 
 export default function GameBoard({ players = [], properties = {}, onSpaceClick }) {
   const containerRef = useRef(null);
-  const [scale, setScale] = useState(1);
+  const [boardSize, setBoardSize] = useState({
+    width: totalW + (BOARD_INSET * 2),
+    height: totalH + (BOARD_INSET * 2),
+  });
   const { playerAnimPositions, movingPlayerId } = useGameStore();
+
+  const metrics = useMemo(
+    () => buildBoardMetrics(boardSize.width, boardSize.height),
+    [boardSize.height, boardSize.width],
+  );
+  const spaceRects = useMemo(() => buildSpaceRects(metrics), [metrics]);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const compute = () => {
-      const w = el.clientWidth;
-      const h = el.clientHeight;
-      if (!w || !h) return;
-      setScale(Math.min(w / totalW, h / totalH));
+      const width = el.clientWidth;
+      const height = el.clientHeight;
+      if (!width || !height) return;
+      setBoardSize((current) => (
+        current.width === width && current.height === height
+          ? current
+          : { width, height }
+      ));
     };
     compute();
     const ro = new ResizeObserver(compute);
@@ -144,16 +313,27 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
   const overlayTokens = players
     .filter((p) => !p.bankrupt)
     .map((player) => {
-      const pos = playerAnimPositions[player.id] ?? player.position;
+      const pos = playerAnimPositions[player.id] ?? player.position ?? 0;
 
       // Count players sharing this space to stagger tokens
       const siblings = players.filter(
-        (p) => !p.bankrupt && (playerAnimPositions[p.id] ?? p.position) === pos
+        (p) => !p.bankrupt && (playerAnimPositions[p.id] ?? p.position ?? 0) === pos
       );
       const offsetIndex = siblings.findIndex((p) => p.id === player.id);
-      const offset = offsetIndex * 5;
-
-      const { x, y } = getSpaceCenter(pos);
+      const centeredOffset = offsetIndex - ((siblings.length - 1) / 2);
+      const rect = spaceRects[pos];
+      const { x, y, stackMode } = getTokenAnchor(pos, rect, metrics.tokenSize);
+      const stackStep = Math.max(4, metrics.tokenSize * 0.28);
+      const offsetX = stackMode === 'horizontal'
+        ? centeredOffset * stackStep
+        : stackMode === 'diagonal'
+          ? centeredOffset * stackStep * 0.7
+          : 0;
+      const offsetY = stackMode === 'vertical'
+        ? centeredOffset * stackStep
+        : stackMode === 'diagonal'
+          ? centeredOffset * stackStep * 0.55
+          : 0;
       const isMoving = player.id === movingPlayerId;
       const color = player.color_hex || '#888';
       const textColor = needsDarkText(color) ? '#111' : '#fff';
@@ -164,10 +344,10 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
           title={player.username}
           style={{
             position: 'absolute',
-            width: `${TOKEN_SIZE}px`,
-            height: `${TOKEN_SIZE}px`,
-            left: `${x - TOKEN_SIZE / 2 - offset}px`,
-            top: `${y - TOKEN_SIZE / 2 - offset}px`,
+            width: `${metrics.tokenSize}px`,
+            height: `${metrics.tokenSize}px`,
+            left: `${x + offsetX - metrics.tokenSize / 2}px`,
+            top: `${y + offsetY - metrics.tokenSize / 2}px`,
             // Smooth glide between spaces — matches the STEP_MS in useSocket
             transition: 'left 0.13s ease-out, top 0.13s ease-out, box-shadow 0.1s, transform 0.1s',
             backgroundColor: color,
@@ -177,10 +357,10 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: '12px',
+            fontSize: `${Math.max(10, metrics.tokenSize * 0.36)}px`,
             fontWeight: 'bold',
             userSelect: 'none',
-            zIndex: 20 + offsetIndex,
+            zIndex: 24 + offsetIndex,
             boxShadow: isMoving
               ? `0 0 0 4px rgba(255,255,255,0.75), 0 0 18px 7px ${color}, 0 3px 10px rgba(0,0,0,0.5)`
               : '0 2px 6px rgba(0,0,0,0.45)',
@@ -207,121 +387,67 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
     });
 
   return (
-    <div ref={containerRef} className="w-full h-full flex items-center justify-center">
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden">
       <div
-        className="relative select-none"
+        className="absolute select-none"
         style={{
-          width: `${totalW}px`,
-          height: `${totalH}px`,
-          flexShrink: 0,
-          transform: `scale(${scale})`,
-          transformOrigin: 'center center',
+          left: `${metrics.inset}px`,
+          top: `${metrics.inset}px`,
+          width: `${metrics.boardWidth}px`,
+          height: `${metrics.boardHeight}px`,
         }}
       >
-        {/* Top row: corners 0 (TL) and 30 (TR), inner positions 47→31 */}
-        <div
-          className="absolute flex"
-          style={{ top: 0, left: 0, width: `${totalW}px`, height: `${CORNER}px` }}
-        >
-          {topRow.map((pos) => {
-            const isC = CORNER_POSITIONS.has(pos);
-            return (
-              <div
-                key={pos}
-                style={{
-                  width: isC ? `${CORNER}px` : `${EDGE_W}px`,
-                  height: `${CORNER}px`,
-                  flexShrink: 0,
-                }}
-              >
-                {renderSpace(pos, 'top', isC)}
-              </div>
-            );
-          })}
-        </div>
+        {renderOrder.map((pos) => {
+          const rect = spaceRects[pos];
+          if (!rect) {
+            return null;
+          }
 
-        {/* Bottom row: corners 11 (BL) and 20 (BR), inner positions 12→19 */}
-        <div
-          className="absolute flex"
-          style={{ bottom: 0, left: 0, width: `${totalW}px`, height: `${CORNER}px` }}
-        >
-          {bottomRow.map((pos) => {
-            const isC = CORNER_POSITIONS.has(pos);
-            return (
-              <div
-                key={pos}
-                style={{
-                  width: isC ? `${CORNER}px` : `${bottomCellW}px`,
-                  height: `${CORNER}px`,
-                  flexShrink: 0,
-                }}
-              >
-                {renderSpace(pos, 'bottom', isC)}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Left col inner: positions 1→10, T→B */}
-        <div
-          className="absolute flex flex-col"
-          style={{
-            top: `${CORNER}px`,
-            left: 0,
-            width: `${CORNER}px`,
-            height: `${innerH}px`,
-          }}
-        >
-          {leftColInner.map((pos) => (
+          return (
             <div
               key={pos}
-              style={{ width: `${CORNER}px`, height: `${EDGE_H}px`, flexShrink: 0 }}
+              style={{
+                position: 'absolute',
+                left: `${rect.left}px`,
+                top: `${rect.top}px`,
+                width: `${rect.width}px`,
+                height: `${rect.height}px`,
+              }}
             >
-              {renderSpace(pos, 'left', false)}
+              {renderSpace(pos, rect.orientation, CORNER_POSITIONS.has(pos))}
             </div>
-          ))}
-        </div>
-
-        {/* Right col inner: positions 29→21, T→B */}
-        <div
-          className="absolute flex flex-col"
-          style={{
-            top: `${CORNER}px`,
-            right: 0,
-            width: `${CORNER}px`,
-            height: `${innerH}px`,
-          }}
-        >
-          {rightColInner.map((pos) => (
-            <div
-              key={pos}
-              style={{ width: `${CORNER}px`, height: `${rightCellH}px`, flexShrink: 0 }}
-            >
-              {renderSpace(pos, 'right', false)}
-            </div>
-          ))}
-        </div>
+          );
+        })}
 
         {/* Center — logo */}
         <div
-          className="absolute flex items-center justify-center"
+          className="absolute overflow-hidden rounded-[2rem] border border-slate-800/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
           style={{
-            top: `${CORNER}px`,
-            left: `${CORNER}px`,
-            right: `${CORNER}px`,
-            bottom: `${CORNER}px`,
+            top: `${metrics.corner}px`,
+            left: `${metrics.corner}px`,
+            right: `${metrics.corner}px`,
+            bottom: `${metrics.corner}px`,
             background: 'radial-gradient(ellipse at center, #1a1f2e 0%, #0f1319 100%)',
           }}
         >
-          <div className="text-center">
-            <div className="text-4xl font-black tracking-wider text-transparent bg-clip-text
-                            bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500">
+          <div className="absolute inset-0 flex items-center justify-center pb-[clamp(6rem,16vh,8.5rem)]">
+            <div className="text-center">
+            <div
+              className="text-transparent bg-clip-text bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 font-black tracking-wider"
+              style={{ fontSize: `${Math.max(24, Math.min(46, Math.min(metrics.innerWidth, metrics.innerHeight) * 0.095))}px` }}
+            >
               POOR<span className="text-white">UP</span>
             </div>
-            <div className="text-xs text-gray-600 mt-1 tracking-widest uppercase">
+            <div
+              className="mt-1 text-gray-600 tracking-widest uppercase"
+              style={{ fontSize: `${Math.max(9, Math.min(13, Math.min(metrics.innerWidth, metrics.innerHeight) * 0.024))}px` }}
+            >
               Goon to Victory
             </div>
+            </div>
           </div>
+
+          <CenterLogDock />
         </div>
 
         {/* Token overlay — rendered above all spaces, transitions between pixel coords */}

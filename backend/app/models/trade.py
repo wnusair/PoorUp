@@ -17,6 +17,7 @@ class Trade(db.Model):
     requested_props = db.Column(ARRAY(Integer), default=[])
     offered_lobby_pledges = db.Column(db.JSON, default=list)
     requested_lobby_pledges = db.Column(db.JSON, default=list)
+    included_deal_drafts = db.Column(db.JSON, default=list)
     status = db.Column(db.String(20), default="pending")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     resolved_at = db.Column(db.DateTime, nullable=True)
@@ -37,6 +38,7 @@ class Trade(db.Model):
             "requested_props": self.requested_props or [],
             "offered_lobby_pledges": self.offered_lobby_pledges or [],
             "requested_lobby_pledges": self.requested_lobby_pledges or [],
+            "included_deal_drafts": self.included_deal_drafts or [],
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,

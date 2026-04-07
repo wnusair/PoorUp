@@ -2,6 +2,7 @@
 Economy engine — all financial formulas for PoorUp.
 All functions operate on plain dict game-state (loaded from Redis).
 """
+import math
 import random
 from typing import Any
 
@@ -13,6 +14,81 @@ STANDARD_MAX_DEVELOPMENT_LEVEL = 5
 MINARCHISM_BASE_HOUSE_LEVEL = 4
 MINARCHISM_EXTRA_RENT_INCREMENT = 8.0
 MINARCHISM_PROGRESSIVE_COST_STEP = 0.35
+MIN_FISCAL_BASELINE_PER_PLAYER = 250.0
+
+FISCAL_INFLATION_FACTORS = {
+    "welfare_distribution": {
+        "liberal_democracy": 0.0125,
+        "social_democracy": 0.0105,
+        "default": 0.0115,
+    },
+    "economic_stimulus": {
+        "liberal_democracy": 0.0145,
+        "social_democracy": 0.0125,
+        "default": 0.0135,
+    },
+    "treasury_injection": {
+        "liberal_democracy": 0.0085,
+        "social_democracy": 0.0065,
+        "default": 0.0075,
+    },
+    "lobbying_treasury_injection": {
+        "liberal_democracy": 0.036,
+        "social_democracy": 0.034,
+        "default": 0.035,
+    },
+}
+
+FISCAL_INFLATION_CAPS = {
+    "welfare_distribution": 0.02,
+    "economic_stimulus": 0.025,
+    "treasury_injection": 0.015,
+    "lobbying_treasury_injection": 0.05,
+}
+
+
+def apply_fiscal_inflation(
+    econ: dict,
+    amount: float,
+    settings: dict | None = None,
+    *,
+    active_player_count: int = 1,
+    category: str = "welfare_distribution",
+) -> tuple[dict, float]:
+    amount = max(0.0, float(amount or 0))
+    next_econ = dict(econ)
+    if amount <= 0:
+        return next_econ, 0.0
+
+    factor_table = FISCAL_INFLATION_FACTORS.get(category) or FISCAL_INFLATION_FACTORS["welfare_distribution"]
+    government_type = resolve_government_type(econ=next_econ, settings=settings)
+    factor = float(factor_table.get(government_type, factor_table.get("default", 0.0)) or 0.0)
+    if factor <= 0:
+        return next_econ, 0.0
+
+    try:
+        go_salary = float((settings or {}).get("go_salary", 200) or 200)
+    except (TypeError, ValueError):
+        go_salary = 200.0
+
+    normalized_player_count = max(1, int(active_player_count or 1))
+    baseline = max(
+        MIN_FISCAL_BASELINE_PER_PLAYER * normalized_player_count,
+        max(100.0, go_salary) * normalized_player_count,
+    )
+    spending_pressure = math.log1p(amount / baseline)
+    inflation_delta = round(
+        min(float(FISCAL_INFLATION_CAPS.get(category, 0.02) or 0.02), spending_pressure * factor),
+        4,
+    )
+    if inflation_delta <= 0:
+        return next_econ, 0.0
+
+    next_econ["inflation_rate"] = round(
+        min(2.0, float(next_econ.get("inflation_rate", 0.03) or 0.03) + inflation_delta),
+        4,
+    )
+    return next_econ, inflation_delta
 
 
 def resolve_government_type(
@@ -29,6 +105,19 @@ def resolve_government_type(
         or config.get("government_type")
     )
     return normalize_government_type(raw_value)
+
+
+def resolve_inflation_rate(
+    game_state: dict | None = None,
+    econ: dict | None = None,
+) -> float:
+    state = game_state or {}
+    economy = econ or state.get("econ") or {}
+    try:
+        inflation_rate = float(economy.get("inflation_rate", 0) or 0)
+    except (TypeError, ValueError):
+        inflation_rate = 0.0
+    return max(0.0, inflation_rate)
 
 
 def get_development_cap(
@@ -90,12 +179,14 @@ def calculate_development_cost(
     government_type = resolve_government_type(game_state, econ, settings)
 
     if government_type != "minarchism" or level <= MINARCHISM_BASE_HOUSE_LEVEL:
-        return base_cost
+        inflation_multiplier = 1.0 + resolve_inflation_rate(game_state, econ)
+        return round(base_cost * inflation_multiplier, 2)
 
     extra_houses = level - MINARCHISM_BASE_HOUSE_LEVEL
     progressive_factor = extra_houses * (extra_houses + 1) / 2
     cost_multiplier = 1.0 + (MINARCHISM_PROGRESSIVE_COST_STEP * progressive_factor)
-    return round(base_cost * cost_multiplier, 2)
+    inflation_multiplier = 1.0 + resolve_inflation_rate(game_state, econ)
+    return round(base_cost * cost_multiplier * inflation_multiplier, 2)
 
 
 def calculate_development_refund(
@@ -273,18 +364,37 @@ def calculate_transit_rent(owner_id: int, game_state: dict) -> float:
 # Tax helpers
 # ---------------------------------------------------------------------------
 
+TURN_TAX_RATE_SHARE = 0.05
+LUXURY_TAX_RATE_SHARE = 0.50
+SUPER_TAX_RATE_SHARE = 1.00
+
+
+def get_effective_tax_rate(econ: dict) -> float:
+    """
+    Convert the live tax multiplier into a bounded cash-tax rate.
+
+    Income, turn, luxury, and super taxes all use this effective rate so they
+    remain percentage-based and cannot charge more cash than a player has.
+    Property tax stays asset-based and may still push a player into debt.
+    """
+    tax_mult = max(0.0, float((econ or {}).get("tax_multiplier", 0.15) or 0.15))
+    return tax_mult / (1.0 + tax_mult)
+
+
+def _apply_cash_percentage_tax(player: dict, rate: float) -> tuple[float, float]:
+    raw_balance = float(player.get("balance", 0) or 0)
+    taxable_cash = max(0.0, raw_balance)
+    safe_rate = max(0.0, min(1.0, float(rate or 0)))
+    amount = round(min(taxable_cash, taxable_cash * safe_rate), 2)
+    new_balance = round(raw_balance - amount, 2)
+    return amount, new_balance
+
 def apply_income_tax(player: dict, econ: dict, settings: dict) -> tuple[float, float]:
     """
-    Deduct income tax from player (landing on Income Tax or passing GO).
+    Deduct income tax from a player's current cash.
     Returns (amount_paid, new_balance).
-    Amount goes to treasury.
     """
-    go_salary = float(settings.get("go_salary", 200))
-    tax_mult = float(econ.get("tax_multiplier", 0.15))
-    amount = max(go_salary, float(player["balance"]) * tax_mult)
-    amount = round(amount, 2)
-    new_balance = round(float(player["balance"]) - amount, 2)
-    return amount, new_balance
+    return _apply_cash_percentage_tax(player, get_effective_tax_rate(econ))
 
 
 def apply_property_tax(player: dict, props: list[dict], econ: dict) -> tuple[float, float]:
@@ -292,7 +402,7 @@ def apply_property_tax(player: dict, props: list[dict], econ: dict) -> tuple[flo
     Deduct periodic property tax from player.
     Returns (total_tax, new_balance).
     """
-    tax_mult = float(econ.get("tax_multiplier", 0.15))
+    tax_mult = max(0.0, float(econ.get("tax_multiplier", 0.15) or 0.15))
     total = sum(
         float(p["current_value"]) * 0.01 * tax_mult
         for p in props
@@ -304,33 +414,32 @@ def apply_property_tax(player: dict, props: list[dict], econ: dict) -> tuple[flo
 
 
 def apply_per_turn_tax(player: dict, econ: dict) -> tuple[float, float]:
-    """Deduct per-turn flat tax. Returns (amount, new_balance)."""
-    tax_mult = float(econ.get("tax_multiplier", 0.15))
-    amount = round(50.0 * tax_mult, 2)
-    new_balance = round(float(player["balance"]) - amount, 2)
-    return amount, new_balance
+    """Deduct a capped percentage of current cash. Returns (amount, new_balance)."""
+    return _apply_cash_percentage_tax(player, get_effective_tax_rate(econ) * TURN_TAX_RATE_SHARE)
 
 
 def apply_luxury_tax(player: dict, econ: dict, free_parking_pot: float = 0.0) -> tuple[float, float, float]:
     """
-    Luxury Tax (pos 39): $100 * (1 + tax_multiplier).
+    Luxury Tax (pos 39): percentage of current cash.
     Returns (amount, new_balance, updated_pot).
     """
-    tax_mult = float(econ.get("tax_multiplier", 0.15))
-    amount = round(100.0 * (1 + tax_mult), 2)
-    new_balance = round(float(player["balance"]) - amount, 2)
+    amount, new_balance = _apply_cash_percentage_tax(
+        player,
+        get_effective_tax_rate(econ) * LUXURY_TAX_RATE_SHARE,
+    )
     new_pot = free_parking_pot + amount
     return amount, new_balance, new_pot
 
 
 def apply_super_tax(player: dict, econ: dict, free_parking_pot: float = 0.0) -> tuple[float, float, float]:
     """
-    Super Tax (pos 47): $200 * (1 + tax_multiplier).
+    Super Tax (pos 47): percentage of current cash.
     Returns (amount, new_balance, updated_pot).
     """
-    tax_mult = float(econ.get("tax_multiplier", 0.15))
-    amount = round(200.0 * (1 + tax_mult), 2)
-    new_balance = round(float(player["balance"]) - amount, 2)
+    amount, new_balance = _apply_cash_percentage_tax(
+        player,
+        get_effective_tax_rate(econ) * SUPER_TAX_RATE_SHARE,
+    )
     new_pot = free_parking_pot + amount
     return amount, new_balance, new_pot
 
@@ -349,6 +458,8 @@ def pay_welfare(players: list[dict], econ: dict, settings: dict | None = None) -
     distribution = build_welfare_distribution(players, econ, settings or {})
     if not distribution.get("successful", False):
         econ = dict(econ)
+        distribution = dict(distribution)
+        distribution["inflation_delta"] = 0.0
         if distribution.get("reason") == "Treasury cannot cover the next welfare payment.":
             econ["stability"] = round(max(0.0, float(econ.get("stability", 0.5)) - 0.10), 4)
         return players, econ, distribution
@@ -368,9 +479,35 @@ def pay_welfare(players: list[dict], econ: dict, settings: dict | None = None) -
         if welfare_amount > 0:
             p["balance"] = round(float(p["balance"]) + welfare_amount, 2)
         updated.append(p)
+
+    active_player_count = sum(1 for player in players if not player.get("is_bankrupt", False))
+    econ, inflation_delta = apply_fiscal_inflation(
+        econ,
+        total_cost,
+        settings,
+        active_player_count=active_player_count,
+        category="welfare_distribution",
+    )
     distribution = dict(distribution)
     distribution["treasury_after"] = round(float(econ.get("treasury_balance", 0)), 2)
+    distribution["inflation_delta"] = inflation_delta
     return updated, econ, distribution
+
+
+def apply_treasury_lobbying_inflation(
+    econ: dict,
+    amount: float,
+    settings: dict | None = None,
+    *,
+    active_player_count: int = 1,
+) -> tuple[dict, float]:
+    return apply_fiscal_inflation(
+        econ,
+        amount,
+        settings,
+        active_player_count=active_player_count,
+        category="lobbying_treasury_injection",
+    )
 
 
 # ---------------------------------------------------------------------------

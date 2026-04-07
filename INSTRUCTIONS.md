@@ -398,9 +398,9 @@ Properties are grouped by world region. Within each region, there are 2–3 prop
 | Jail (11) | Just visiting unless sent here. Requires 3 turns or bail payment to leave. |
 | Free Space (20) | No effect. If Free Parking Pot is enabled, collect the pot. |
 | Go To Jail (30) | Immediately move to position 11, do not collect GO salary. |
-| Income Tax (5) | Pay configurable flat rate or % of net worth (whichever is higher). |
-| Luxury Tax (39) | Flat fee automatically deducted. Scales with `tax_multiplier`. |
-| Super Tax (47) | Higher flat fee. Scales with `tax_multiplier`. |
+| Income Tax (5) | Pay a percentage of current cash. Also applies on pass GO if enabled. |
+| Luxury Tax (39) | Percentage of current cash, scaled by the effective tax rate. |
+| Super Tax (47) | Higher percentage of current cash, scaled by the effective tax rate. |
 | Transit (6,15,25,36) | Airports — if opponent owns all 4, rent doubles per additional owned. |
 
 ---
@@ -801,11 +801,10 @@ Applied every time a player passes or lands on START, if enabled.
 def apply_income_tax(player, econ, settings):
     if not settings.get('income_tax_on_pass_go', True):
         return 0
-    
-    flat_rate = 200
-    percent_rate = player['balance'] * econ['tax_multiplier']
-    tax = max(flat_rate, percent_rate)    # Player pays the higher amount
-    
+
+    effective_rate = econ['tax_multiplier'] / (1 + econ['tax_multiplier'])
+    tax = min(player['balance'], player['balance'] * effective_rate)
+
     deduct(player, tax)
     deposit_treasury(tax, econ)
     log_event(game_state, 'income_tax', f"{player['username']} paid ${tax:.2f} income tax")
@@ -832,38 +831,41 @@ def apply_global_property_tax(game_state, econ):
 
 ### Tax Every Turn (optional setting)
 
-If `tax_every_turn` is enabled in lobby settings, a small flat tax is applied at the end of each player's turn:
+If `tax_every_turn` is enabled in lobby settings, a small percentage-based tax is applied at the end of each player's turn:
 
 ```python
 def apply_per_turn_tax(player, econ, settings):
     if not settings.get('tax_every_turn', False):
         return
-    flat_tax = round(50 * econ['tax_multiplier'], 2)
-    deduct(player, flat_tax)
-    deposit_treasury(flat_tax, econ)
-    log_event(game_state, 'turn_tax', f"{player['username']} paid ${flat_tax:.2f} turn tax")
+
+    effective_rate = econ['tax_multiplier'] / (1 + econ['tax_multiplier'])
+    turn_tax = min(player['balance'], player['balance'] * effective_rate * 0.05)
+    deduct(player, turn_tax)
+    deposit_treasury(turn_tax, econ)
+    log_event(game_state, 'turn_tax', f"{player['username']} paid ${turn_tax:.2f} turn tax")
 ```
 
 ### Luxury Tax & Super Tax
 
-These are fixed-position board spaces, not toggles. They scale with the current tax multiplier:
+These are fixed-position board spaces, not toggles. They both use the same effective cash-tax rate, but with different severity multipliers:
 
 ```python
-LUXURY_TAX_BASE = 100
-SUPER_TAX_BASE  = 200
+effective_rate = econ['tax_multiplier'] / (1 + econ['tax_multiplier'])
 
 def apply_luxury_tax(player, econ):
-    amount = LUXURY_TAX_BASE * (1 + econ['tax_multiplier'])
+    amount = min(player['balance'], player['balance'] * effective_rate * 0.50)
     deduct(player, amount)
     deposit_treasury(amount, econ)
     log_event(game_state, 'luxury_tax', f"{player['username']} paid ${amount:.2f} luxury tax")
 
 def apply_super_tax(player, econ):
-    amount = SUPER_TAX_BASE * (1 + econ['tax_multiplier'])
+    amount = min(player['balance'], player['balance'] * effective_rate)
     deduct(player, amount)
     deposit_treasury(amount, econ)
     log_event(game_state, 'super_tax', f"{player['username']} paid ${amount:.2f} super tax")
 ```
+
+Only property tax is allowed to push a player into debt. All cash-based taxes cap themselves at the player's current balance.
 
 ---
 

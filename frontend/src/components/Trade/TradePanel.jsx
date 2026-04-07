@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useGameStore } from '../../hooks/useGameState';
+import { formatDealDeadline, summarizeClause } from '../../utils/deals';
 import { BOARD_SPACES, needsDarkText } from '../../utils/constants';
 import { formatMoney } from '../../utils/formatters';
 
@@ -34,7 +35,7 @@ function PropertyChip({ position, onAdd, onRemove, selected, disabled }) {
 }
 
 export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose }) {
-  const { activeTrade, players, properties, settings, economy, lobbyingStats } = useGameStore();
+  const { activeTrade, players, properties, settings, economy, lobbyingStats, tradeDealDrafts, deleteTradeDealDraft } = useGameStore();
   const [targetPlayerId, setTargetPlayerId] = useState('');
   const [offerMoney, setOfferMoney] = useState(0);
   const [requestMoney, setRequestMoney] = useState(0);
@@ -44,6 +45,7 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
   const [offerLobbyAmount, setOfferLobbyAmount] = useState(0);
   const [requestLobbyTarget, setRequestLobbyTarget] = useState('');
   const [requestLobbyAmount, setRequestLobbyAmount] = useState(0);
+  const [selectedDraftIds, setSelectedDraftIds] = useState([]);
   const [error, setError] = useState('');
 
   const me = players.find((p) => p.id === myPlayerId);
@@ -83,6 +85,39 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
   const tradeToView = activeTrade || null;
   const isReceiver = tradeToView?.receiver_id === myPlayerId;
   const isProposer = tradeToView?.proposer_id === myPlayerId;
+  const savedDraftCounterparties = useMemo(() => {
+    const grouped = new Map();
+    for (const draft of tradeDealDrafts || []) {
+      const counterpartyId = Number(draft?.counterparty_id || 0);
+      if (!counterpartyId || grouped.has(counterpartyId)) {
+        continue;
+      }
+      grouped.set(counterpartyId, {
+        counterpartyId,
+        player: players.find((player) => player.id === counterpartyId) || null,
+      });
+    }
+    return Array.from(grouped.values());
+  }, [players, tradeDealDrafts]);
+  const availableDealDrafts = useMemo(
+    () => (tradeDealDrafts || []).filter(
+      (draft) => String(draft.counterparty_id) === String(targetPlayerId || ''),
+    ),
+    [targetPlayerId, tradeDealDrafts],
+  );
+  const visibleDealDrafts = targetPlayerId ? availableDealDrafts : (tradeDealDrafts || []);
+
+  useEffect(() => {
+    if (tradeToView || targetPlayerId || savedDraftCounterparties.length !== 1) {
+      return;
+    }
+
+    setTargetPlayerId(savedDraftCounterparties[0].counterpartyId);
+  }, [savedDraftCounterparties, targetPlayerId, tradeToView]);
+
+  useEffect(() => {
+    setSelectedDraftIds((previous) => previous.filter((draftId) => availableDealDrafts.some((draft) => draft.id === draftId)));
+  }, [availableDealDrafts]);
 
   const renderTradeCard = (title, money, tradeProperties, lobbyPledges, accentClass) => (
     <div className="bg-gray-800 rounded-xl p-4">
@@ -132,6 +167,10 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
       return setError('One or more selected properties could not be resolved');
     }
 
+    const includedDealDrafts = selectedDraftIds
+      .map((draftId) => availableDealDrafts.find((draft) => draft.id === draftId)?.payload)
+      .filter(Boolean);
+
     onSubmit({
       receiver_id: targetPlayerId,
       offered_money: offerMoney,
@@ -140,6 +179,7 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
       requested_props: requestedPropIds,
       offered_lobby_pledges: offeredLobbyPledges,
       requested_lobby_pledges: requestedLobbyPledges,
+      included_deal_drafts: includedDealDrafts,
     });
   };
 
@@ -147,6 +187,29 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
   const removeOffer = (pos) => setOfferProperties((prev) => prev.filter((p) => p !== pos));
   const addRequest = (pos) => setRequestProperties((prev) => [...prev, pos]);
   const removeRequest = (pos) => setRequestProperties((prev) => prev.filter((p) => p !== pos));
+
+  const toggleDealDraft = (draftId) => {
+    setSelectedDraftIds((previous) => (
+      previous.includes(draftId)
+        ? previous.filter((entry) => entry !== draftId)
+        : [...previous, draftId]
+    ));
+  };
+
+  const selectDealDraft = (draft) => {
+    const counterpartyId = Number(draft?.counterparty_id || 0);
+    if (!counterpartyId) {
+      return;
+    }
+
+    if (!targetPlayerId || String(targetPlayerId) !== String(counterpartyId)) {
+      setTargetPlayerId(counterpartyId);
+      setSelectedDraftIds([draft.id]);
+      return;
+    }
+
+    toggleDealDraft(draft.id);
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -190,6 +253,32 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
                 'text-red-400'
               )}
             </div>
+            {(tradeToView.included_deal_drafts || []).length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+                <h3 className="text-sm font-semibold text-cyan-300">Attached Deal Drafts</h3>
+                <div className="space-y-3">
+                  {tradeToView.included_deal_drafts.map((draft, index) => (
+                    <div key={`trade-draft-${index}`} className="rounded-lg border border-cyan-900/40 bg-gray-900/80 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-white">{draft.title || `Deal Draft ${index + 1}`}</p>
+                        <span className="text-xs text-cyan-200">{draft.clauses?.length || 0} clauses</span>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {(draft.clauses || []).map((clause, clauseIndex) => (
+                          <div key={`trade-draft-${index}-clause-${clauseIndex}`} className="rounded-lg border border-gray-700 bg-gray-950/70 px-3 py-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Clause {clauseIndex + 1}</span>
+                              <span className="text-xs text-gray-500">{formatDealDeadline(clause.deadline)}</span>
+                            </div>
+                            <p className="mt-2 text-sm text-gray-300">{summarizeClause(clause, myPlayerId, players, properties)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {isReceiver && (
               <div className="flex gap-3 mt-4">
                 <button
@@ -364,6 +453,73 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
                     <p className="text-[11px] leading-4 text-gray-500">Use this when you want the other player to fund a policy push as part of the deal.</p>
                   </div>
                 )}
+              </div>
+            </div>
+
+            <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-cyan-300">Bundled Deal Drafts</h3>
+                  <p className="mt-1 text-xs text-gray-500">Save a draft from the Deals Desk, then attach it here so the trade can activate the contract immediately on acceptance.</p>
+                </div>
+                <span className="text-xs text-gray-500">{selectedDraftIds.length} selected</span>
+              </div>
+
+              {!targetPlayerId && visibleDealDrafts.length > 0 && (
+                <p className="text-xs text-gray-500 italic">Pick a saved draft below to lock the trade partner automatically, or choose a player first.</p>
+              )}
+
+              {!targetPlayerId && visibleDealDrafts.length === 0 && (
+                <p className="text-xs text-gray-500 italic">No saved deal drafts yet.</p>
+              )}
+
+              {targetPlayerId && availableDealDrafts.length === 0 && (
+                <p className="text-xs text-gray-500 italic">No saved deal drafts for this player yet.</p>
+              )}
+
+              <div className="space-y-2">
+                {visibleDealDrafts.map((draft) => {
+                  const isSelected = selectedDraftIds.includes(draft.id);
+                  const draftCounterparty = players.find((player) => player.id === Number(draft.counterparty_id || 0));
+                  return (
+                    <div
+                      key={draft.id}
+                      className={[
+                        'flex items-start justify-between gap-3 rounded-xl border p-3',
+                        isSelected ? 'border-cyan-500 bg-cyan-950/20' : 'border-gray-700 bg-gray-900/80',
+                      ].join(' ')}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => selectDealDraft(draft)}
+                        aria-pressed={isSelected}
+                        className="flex-1 text-left"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-white">{draft.title || 'Untitled deal draft'}</p>
+                          <span className="text-xs text-gray-400">{draft.clauses?.length || 0} clauses</span>
+                        </div>
+                        {!targetPlayerId && draftCounterparty && (
+                          <p className="mt-2 text-[11px] uppercase tracking-[0.18em] text-cyan-300/80">
+                            Attach with {draftCounterparty.username}
+                          </p>
+                        )}
+                        {(draft.clauses || []).slice(0, 2).map((clause, index) => (
+                          <p key={`${draft.id}-preview-${index}`} className="mt-2 text-xs leading-5 text-gray-300">
+                            {summarizeClause(clause, myPlayerId, players, properties)}
+                          </p>
+                        ))}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteTradeDealDraft(draft.id)}
+                        className="rounded-lg border border-rose-800/60 px-2.5 py-1 text-xs font-semibold text-rose-200 transition hover:border-rose-500 hover:text-white"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 

@@ -5,16 +5,23 @@ All state mutations flow through Redis first; PostgreSQL is persisted async.
 import json
 import random
 import string
+import uuid
 from datetime import datetime
 from typing import Any
 
+from flask import current_app
+
 from app import db
 from app.engine.economy import (
+    apply_fiscal_inflation,
+    apply_treasury_lobbying_inflation,
     compute_gini_coefficient,
     drift_economy,
     apply_income_tax,
+    apply_luxury_tax,
     apply_property_tax,
     apply_per_turn_tax,
+    apply_super_tax,
     pay_welfare,
     apply_hyper_inflation,
     get_player_properties,
@@ -31,7 +38,9 @@ from app.engine.analytics import (
 from app.engine.events import (
     move_player,
     resolve_space,
+    start_auction,
     BOARD_SIZE,
+    normalize_board_position,
     TAX_INCOME_POSITION,
     TAX_LUXURY_POSITION,
     TAX_SUPER_POSITION,
@@ -43,7 +52,7 @@ from app.engine.taxation import (
     record_tax_payment,
     record_welfare_distribution,
 )
-from app.engine.social import ensure_social_state, resolve_end_of_round_social_state
+from app.engine.social import ensure_social_state, record_bailout_event, resolve_end_of_round_social_state
 from app.engine.deals import (
     attach_deals_snapshot,
     decrement_round_deadlines,
@@ -62,17 +71,17 @@ from app.engine.debt import (
 )
 from app.utils.settings import normalize_government_type, normalize_settings_payload
 
-# Board layout — full 48-position board
+BOARD_LAYOUT_VERSION = 6
+RETIRED_BOARD_POSITIONS = {1, 3, 7, 8, 21, 28, 29, 33, 35, 41, 42, 43, 44, 45, 46}
+RETIRED_PROPERTY_POSITIONS = {1, 7, 21, 28, 35, 41, 43, 45, 46}
+
+# Board layout — sparse board positions with retired spaces removed from active play.
 BOARD = [
     {"position": 0,  "name": "START",              "region": None,           "group_color": None,      "base_price": None,  "type": "start"},
-    {"position": 1,  "name": "Lagos",               "region": "Africa",       "group_color": "#8B4513", "base_price": 60,    "type": "property"},
     {"position": 2,  "name": "Nairobi",             "region": "Africa",       "group_color": "#8B4513", "base_price": 60,    "type": "property"},
-    {"position": 3,  "name": "Community Chest",     "region": None,           "group_color": None,      "base_price": None,  "type": "community_chest"},
     {"position": 4,  "name": "Cairo",               "region": "Africa",       "group_color": "#8B4513", "base_price": 100,   "type": "property"},
     {"position": 5,  "name": "Income Tax",          "region": None,           "group_color": None,      "base_price": None,  "type": "tax"},
     {"position": 6,  "name": "Mumbai Airport",      "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
-    {"position": 7,  "name": "Delhi",               "region": "South Asia",   "group_color": "#EC4899", "base_price": 100,   "type": "property"},
-    {"position": 8,  "name": "Chance",              "region": None,           "group_color": None,      "base_price": None,  "type": "chance"},
     {"position": 9,  "name": "Karachi",             "region": "South Asia",   "group_color": "#EC4899", "base_price": 120,   "type": "property"},
     {"position": 10, "name": "Dhaka",               "region": "South Asia",   "group_color": "#EC4899", "base_price": 140,   "type": "property"},
     {"position": 11, "name": "Jail / Just Visiting","region": None,           "group_color": None,      "base_price": None,  "type": "jail"},
@@ -85,32 +94,21 @@ BOARD = [
     {"position": 18, "name": "St. Petersburg",      "region": "Eastern Europe","group_color": "#DC2626", "base_price": 200,   "type": "property"},
     {"position": 19, "name": "Kiev",                "region": "Eastern Europe","group_color": "#DC2626", "base_price": 220,   "type": "property"},
     {"position": 20, "name": "Free Space",          "region": None,           "group_color": None,      "base_price": None,  "type": "free"},
-    {"position": 21, "name": "Berlin",              "region": "Western Europe","group_color": "#EAB308", "base_price": 220,   "type": "property"},
     {"position": 22, "name": "Chance",              "region": None,           "group_color": None,      "base_price": None,  "type": "chance"},
     {"position": 23, "name": "Paris",               "region": "Western Europe","group_color": "#EAB308", "base_price": 240,   "type": "property"},
     {"position": 24, "name": "London",              "region": "Western Europe","group_color": "#EAB308", "base_price": 260,   "type": "property"},
     {"position": 25, "name": "London Heathrow",     "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
     {"position": 26, "name": "Shanghai",            "region": "China",        "group_color": "#F97316", "base_price": 260,   "type": "property"},
     {"position": 27, "name": "Beijing",             "region": "China",        "group_color": "#F97316", "base_price": 280,   "type": "property"},
-    {"position": 28, "name": "Chongqing",           "region": "China",        "group_color": "#F97316", "base_price": 300,   "type": "property"},
-    {"position": 29, "name": "Community Chest",     "region": None,           "group_color": None,      "base_price": None,  "type": "community_chest"},
     {"position": 30, "name": "Go To Jail",          "region": None,           "group_color": None,      "base_price": None,  "type": "go_to_jail"},
     {"position": 31, "name": "Tokyo",               "region": "East Asia",    "group_color": "#06B6D4", "base_price": 300,   "type": "property"},
     {"position": 32, "name": "Seoul",               "region": "East Asia",    "group_color": "#06B6D4", "base_price": 320,   "type": "property"},
-    {"position": 33, "name": "Chance",              "region": None,           "group_color": None,      "base_price": None,  "type": "chance"},
     {"position": 34, "name": "Sydney",              "region": "Oceania",      "group_color": "#06B6D4", "base_price": 320,   "type": "property"},
-    {"position": 35, "name": "Melbourne",           "region": "Oceania",      "group_color": "#06B6D4", "base_price": 340,   "type": "property"},
     {"position": 36, "name": "JFK Airport",         "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
     {"position": 37, "name": "São Paulo",           "region": "Latin America", "group_color": "#16A34A", "base_price": 350,   "type": "property"},
     {"position": 38, "name": "Buenos Aires",        "region": "Latin America", "group_color": "#16A34A", "base_price": 370,   "type": "property"},
     {"position": 39, "name": "Luxury Tax",          "region": None,           "group_color": None,      "base_price": None,  "type": "tax"},
     {"position": 40, "name": "New York",            "region": "North America", "group_color": "#16A34A", "base_price": 400,   "type": "property"},
-    {"position": 41, "name": "Los Angeles",         "region": "North America", "group_color": "#16A34A", "base_price": 400,   "type": "property"},
-    {"position": 42, "name": "Community Chest",     "region": None,           "group_color": None,      "base_price": None,  "type": "community_chest"},
-    {"position": 43, "name": "Chicago",             "region": "North America", "group_color": "#2563EB", "base_price": 420,   "type": "property"},
-    {"position": 44, "name": "Chance",              "region": None,           "group_color": None,      "base_price": None,  "type": "chance"},
-    {"position": 45, "name": "Washington D.C.",     "region": "North America", "group_color": "#2563EB", "base_price": 440,   "type": "property"},
-    {"position": 46, "name": "Silicon Valley",      "region": "North America", "group_color": "#2563EB", "base_price": 450,   "type": "property"},
     {"position": 47, "name": "Super Tax",           "region": None,           "group_color": None,      "base_price": None,  "type": "tax"},
 ]
 
@@ -144,6 +142,7 @@ DEFAULT_SETTINGS = {
     "welfare_balance_cap": 0,
     "policy_voting_enabled": True,
     "jail_enabled": True,
+    "collect_rent_while_jailed": False,
     "free_parking_pot_enabled": False,
     "double_on_go": False,
     "max_active_deals_per_player": 3,
@@ -153,6 +152,44 @@ DEFAULT_SETTINGS = {
 
 # Chance cards seed data
 REMOVED_CARD_EFFECT_TYPES = {"get_out_of_jail_free", "go_to_jail"}
+
+
+def release_player_from_jail(
+    game_state: dict,
+    player_id: int,
+    *,
+    bail_amount: float = 0.0,
+    consume_card: bool = False,
+) -> tuple[dict, dict | None]:
+    next_state = dict(game_state)
+    updated_players = []
+    released_player = None
+
+    for player in next_state.get("players", []):
+        next_player = dict(player)
+        if int(next_player.get("id", 0) or 0) == int(player_id):
+            if bail_amount > 0:
+                next_player["balance"] = round(float(next_player.get("balance", 0) or 0) - bail_amount, 2)
+            next_player["is_jailed"] = False
+            next_player["jail_turns_remaining"] = 0
+            if consume_card:
+                next_player["has_jail_card"] = False
+            released_player = next_player
+        updated_players.append(next_player)
+
+    next_state["players"] = updated_players
+
+    if bail_amount > 0:
+        econ = dict(next_state.get("econ", {}))
+        econ["treasury_balance"] = round(float(econ.get("treasury_balance", 0) or 0) + bail_amount, 2)
+        next_state["econ"] = econ
+
+    # Make the release effective on the current turn so the player can act immediately.
+    next_state["dice_rolled_this_turn"] = False
+    if int(next_state.get("current_player_id") or 0) == int(player_id):
+        next_state["awaiting_end_turn_player_id"] = None
+
+    return next_state, released_player
 
 
 CHANCE_CARDS = [
@@ -367,6 +404,7 @@ def initialize_game_state(match, match_players, redis_client, socketio_instance)
     # Full game state
     game_state = {
         "match_id": match.id,
+        "board_layout_version": BOARD_LAYOUT_VERSION,
         "status": "active",
         "current_round": 1,
         "current_turn_index": 0,
@@ -400,6 +438,8 @@ def initialize_game_state(match, match_players, redis_client, socketio_instance)
     match.current_round = 1
     db.session.commit()
 
+    schedule_turn_timeout(game_state, match.id, redis_client, socketio_instance)
+
     return game_state
 
 
@@ -419,53 +459,334 @@ def _write_game_state_to_redis(game_state: dict, match_id: int, redis_client) ->
     redis_client.set(f"game:{mid}:econ", json.dumps(econ))
 
 
-def _synchronize_property_metadata(game_state: dict) -> dict:
+def _turn_timeout_token_key(match_id: int) -> str:
+    return f"game:{match_id}:turn_timeout:token"
+
+
+def _turn_timeout_marker_key(match_id: int) -> str:
+    return f"game:{match_id}:turn_timeout:marker"
+
+
+def _turn_timeout_deadline_key(match_id: int) -> str:
+    return f"game:{match_id}:turn_timeout:deadline"
+
+
+def _turn_timeout_marker(game_state: dict) -> str:
+    return ":".join(
+        [
+            str(game_state.get("current_round", 0)),
+            str(game_state.get("current_turn_index", 0)),
+            str(game_state.get("current_player_id") or ""),
+        ]
+    )
+
+
+def _turn_timer_limit_seconds(game_state: dict) -> int:
+    settings = game_state.get("settings", DEFAULT_SETTINGS)
+    if settings.get("turn_timer_enabled", True) is False:
+        return 0
+
+    try:
+        limit_seconds = int(
+            settings.get(
+                "turn_time_limit_seconds",
+                DEFAULT_SETTINGS["turn_time_limit_seconds"],
+            )
+            or 0
+        )
+    except (TypeError, ValueError):
+        limit_seconds = int(DEFAULT_SETTINGS["turn_time_limit_seconds"])
+
+    return max(0, limit_seconds)
+
+
+def clear_turn_timeout(match_id: int, redis_client) -> None:
+    redis_client.set(_turn_timeout_token_key(match_id), "")
+    redis_client.set(_turn_timeout_marker_key(match_id), "")
+    redis_client.set(_turn_timeout_deadline_key(match_id), "")
+
+
+def schedule_turn_timeout(game_state: dict, match_id: int, redis_client, socketio_instance) -> None:
+    if game_state.get("status") != "active" or game_state.get("current_player_id") is None:
+        clear_turn_timeout(match_id, redis_client)
+        return
+
+    limit_seconds = _turn_timer_limit_seconds(game_state)
+    if limit_seconds <= 0:
+        clear_turn_timeout(match_id, redis_client)
+        return
+
+    turn_marker = _turn_timeout_marker(game_state)
+    token_key = _turn_timeout_token_key(match_id)
+    marker_key = _turn_timeout_marker_key(match_id)
+    existing_token = redis_client.get(token_key)
+
+    if redis_client.get(marker_key) == turn_marker and existing_token:
+        return
+
+    timeout_token = uuid.uuid4().hex
+    redis_client.set(marker_key, turn_marker)
+    redis_client.set(token_key, timeout_token)
+    redis_client.set(
+        _turn_timeout_deadline_key(match_id),
+        str(int(datetime.utcnow().timestamp() + limit_seconds)),
+    )
+
+    app_obj = current_app._get_current_object()
+    socketio_instance.start_background_task(
+        _turn_timeout_task,
+        app_obj,
+        match_id,
+        int(game_state.get("current_player_id")),
+        turn_marker,
+        timeout_token,
+        limit_seconds,
+        redis_client,
+        socketio_instance,
+    )
+
+
+def _resolve_turn_timeout(
+    game_state: dict,
+    player_id: int,
+    match_id: int,
+    redis_client,
+    socketio_instance,
+) -> dict:
+    next_state = dict(game_state)
+    settings = next_state.get("settings", DEFAULT_SETTINGS)
+    current_round = next_state.get("current_round", 1)
+    player = next((entry for entry in next_state.get("players", []) if entry.get("id") == player_id), None)
+    if player is None:
+        return next_state
+
+    timed_out_property = None
+    pending_action = next_state.get("pending_action") or {}
+    if pending_action.get("type") == "buy_property" and pending_action.get("player_id") == player_id:
+        timed_out_property = next(
+            (
+                entry
+                for entry in next_state.get("properties", [])
+                if entry.get("id") == pending_action.get("property_id")
+            ),
+            pending_action.get("property"),
+        )
+        if (
+            timed_out_property
+            and timed_out_property.get("owner_id") is None
+            and settings.get("auction_enabled", True)
+        ):
+            start_auction(timed_out_property, next_state, redis_client, socketio_instance, match_id)
+        next_state.pop("pending_action", None)
+        next_state.pop("pending_turn_context", None)
+
+    timeout_description = f"{player.get('username', 'Player')}'s turn timer expired. Their turn ended automatically."
+    if timed_out_property:
+        timeout_description = (
+            f"{player.get('username', 'Player')}'s turn timer expired. "
+            f"{timed_out_property.get('name', 'The property')} was declined and the turn ended automatically."
+        )
+
+    next_state = log_and_broadcast(
+        next_state,
+        "turn_timeout",
+        timeout_description,
+        match_id,
+        redis_client,
+        socketio_instance,
+        player_id=player_id,
+    )
+
+    next_state = check_bankruptcy(
+        next_state,
+        match_id,
+        redis_client,
+        socketio_instance,
+        player_id=player_id,
+    )
+    active_player = next((entry for entry in next_state.get("players", []) if entry.get("id") == player_id), None)
+    if active_player and (
+        float(active_player.get("balance", 0) or 0) < 0
+        or has_pending_player_debt(next_state, player_id)
+    ):
+        next_state, outcome = declare_player_bankruptcy(
+            next_state,
+            player_id,
+            match_id,
+            redis_client,
+            socketio_instance,
+        )
+
+        if outcome.get("bankrupt"):
+            winner = check_win_condition(next_state, settings)
+            if winner:
+                next_state = dict(next_state)
+                next_state["status"] = "completed"
+                next_state["winner"] = winner
+                next_state.pop("awaiting_end_turn_player_id", None)
+                next_state["dice_rolled_this_turn"] = False
+                socketio_instance.emit("game_over", {"match_id": match_id, "winner": winner}, room=str(match_id))
+                return next_state
+
+    if next_state.get("status") == "completed" or next_state.get("current_player_id") != player_id:
+        return next_state
+
+    return end_turn(
+        next_state,
+        player_id,
+        {"is_doubles": False},
+        match_id,
+        redis_client,
+        socketio_instance,
+        settings,
+        next_state.get("econ", {}),
+        current_round,
+    )
+
+
+def _turn_timeout_task(
+    app_obj,
+    match_id: int,
+    player_id: int,
+    turn_marker: str,
+    timeout_token: str,
+    limit_seconds: int,
+    redis_client,
+    socketio_instance,
+) -> None:
+    socketio_instance.sleep(limit_seconds)
+
+    with app_obj.app_context():
+        if redis_client.get(_turn_timeout_token_key(match_id)) != timeout_token:
+            return
+        if redis_client.get(_turn_timeout_marker_key(match_id)) != turn_marker:
+            return
+
+        game_state = load_game_state(match_id, redis_client)
+        if not game_state or game_state.get("status") != "active":
+            clear_turn_timeout(match_id, redis_client)
+            return
+        if _turn_timer_limit_seconds(game_state) <= 0:
+            clear_turn_timeout(match_id, redis_client)
+            return
+        if _turn_timeout_marker(game_state) != turn_marker:
+            return
+        if int(game_state.get("current_player_id") or 0) != int(player_id):
+            return
+
+        next_state = _resolve_turn_timeout(
+            game_state,
+            player_id,
+            match_id,
+            redis_client,
+            socketio_instance,
+        )
+        if next_state.get("status") != "active" or next_state.get("current_player_id") is None:
+            clear_turn_timeout(match_id, redis_client)
+
+        persist_game_state(next_state, match_id, redis_client)
+        broadcast_game_state_snapshot(socketio_instance, match_id, next_state)
+
+
+def _synchronize_property_metadata(game_state: dict) -> tuple[dict, bool]:
     properties = game_state.get("properties", [])
-    if not properties:
-        return game_state
+    board_version = int(game_state.get("board_layout_version", 0) or 0)
+    if not properties and board_version == BOARD_LAYOUT_VERSION:
+        return game_state, False
 
     updated = False
+    removed_property_ids = set()
+    migration_logs = []
     normalized_properties = []
+    normalized_players = [dict(player) for player in game_state.get("players", [])]
+    player_by_id = {
+        int(player.get("id")): player
+        for player in normalized_players
+        if player.get("id") is not None
+    }
+
+    for player in normalized_players:
+        normalized_position = normalize_board_position(player.get("current_position", 0))
+        if player.get("current_position") != normalized_position:
+            player["current_position"] = normalized_position
+            updated = True
 
     for prop in properties:
         normalized_prop = dict(prop)
         board_space = BOARD_BY_POSITION.get(normalized_prop.get("board_position"))
 
-        if board_space and board_space.get("type") in ("property", "transit"):
-            if normalized_prop.get("name") != board_space.get("name"):
-                normalized_prop["name"] = board_space.get("name")
-                updated = True
+        if not board_space or board_space.get("type") not in ("property", "transit"):
+            updated = True
+            removed_property_ids.add(int(normalized_prop.get("id") or 0))
 
-            if normalized_prop.get("region") != board_space.get("region"):
-                normalized_prop["region"] = board_space.get("region")
-                updated = True
+            if board_version < BOARD_LAYOUT_VERSION and normalized_prop.get("board_position") in RETIRED_PROPERTY_POSITIONS:
+                owner_id = normalized_prop.get("owner_id")
+                refund_amount = round(float(normalized_prop.get("current_value") or normalized_prop.get("base_price") or 0), 2)
+                if owner_id is not None and refund_amount > 0:
+                    player = player_by_id.get(int(owner_id))
+                    if player:
+                        player["balance"] = round(float(player.get("balance", 0) or 0) + refund_amount, 2)
+                        migration_logs.append({
+                            "event_type": "move",
+                            "description": f"{player.get('username', 'Player')} was refunded ${refund_amount:.2f} after {normalized_prop.get('name', 'a retired property')} was removed from the board.",
+                            "player_id": player.get("id"),
+                            "round": game_state.get("current_round", 0),
+                            "turn": game_state.get("current_turn_index", 0),
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+            continue
 
-            if normalized_prop.get("group_color") != board_space.get("group_color"):
-                normalized_prop["group_color"] = board_space.get("group_color")
-                updated = True
+        if normalized_prop.get("name") != board_space.get("name"):
+            normalized_prop["name"] = board_space.get("name")
+            updated = True
 
-            base_price = board_space.get("base_price")
-            normalized_base_price = float(base_price) if base_price is not None else None
-            if normalized_prop.get("base_price") != normalized_base_price:
-                normalized_prop["base_price"] = normalized_base_price
-                updated = True
+        if normalized_prop.get("region") != board_space.get("region"):
+            normalized_prop["region"] = board_space.get("region")
+            updated = True
 
-            if normalized_prop.get("property_type") != board_space.get("type"):
-                normalized_prop["property_type"] = board_space.get("type")
-                updated = True
+        if normalized_prop.get("group_color") != board_space.get("group_color"):
+            normalized_prop["group_color"] = board_space.get("group_color")
+            updated = True
 
-            if normalized_prop.get("current_value") is None and normalized_base_price is not None:
-                normalized_prop["current_value"] = normalized_base_price
-                updated = True
+        base_price = board_space.get("base_price")
+        normalized_base_price = float(base_price) if base_price is not None else None
+        if normalized_prop.get("base_price") != normalized_base_price:
+            normalized_prop["base_price"] = normalized_base_price
+            updated = True
+
+        if normalized_prop.get("property_type") != board_space.get("type"):
+            normalized_prop["property_type"] = board_space.get("type")
+            updated = True
+
+        if normalized_prop.get("current_value") is None and normalized_base_price is not None:
+            normalized_prop["current_value"] = normalized_base_price
+            updated = True
 
         normalized_properties.append(normalized_prop)
 
-    if not updated:
-        return game_state
-
     next_state = dict(game_state)
+    if board_version != BOARD_LAYOUT_VERSION:
+        next_state["board_layout_version"] = BOARD_LAYOUT_VERSION
+        updated = True
+
+    if migration_logs:
+        existing_logs = list(next_state.get("log_buffer", []))
+        next_state["log_buffer"] = (existing_logs + migration_logs)[-100:]
+
+    if normalized_players != game_state.get("players", []):
+        next_state["players"] = normalized_players
+        updated = True
+
+    pending_action = next_state.get("pending_action")
+    if pending_action:
+        pending_property_id = int(pending_action.get("property_id") or 0)
+        pending_position = pending_action.get("position")
+        if pending_property_id in removed_property_ids or pending_position in RETIRED_BOARD_POSITIONS:
+            next_state["pending_action"] = None
+            updated = True
+
     next_state["properties"] = normalized_properties
-    return next_state
+    return next_state, updated
 
 
 def load_game_state(match_id: int, redis_client) -> dict | None:
@@ -474,7 +795,7 @@ def load_game_state(match_id: int, redis_client) -> dict | None:
     raw = redis_client.get(f"game:{match_id}:state")
     if raw is None:
         return None
-    game_state = _synchronize_property_metadata(json.loads(raw))
+    game_state, board_state_updated = _synchronize_property_metadata(json.loads(raw))
     game_state = ensure_tax_stats(game_state)
 
     policy_records = Policy.query.filter_by(match_id=match_id).all()
@@ -492,7 +813,12 @@ def load_game_state(match_id: int, redis_client) -> dict | None:
     if not (game_state.get("player_finance_history") or {}).get("last_fingerprint"):
         game_state = record_player_finance_snapshot(game_state, force=True)
     game_state = ensure_social_state(game_state)
-    return attach_deals_snapshot(game_state, match_id)
+    game_state = attach_deals_snapshot(game_state, match_id)
+
+    if board_state_updated:
+        _write_game_state_to_redis(game_state, match_id, redis_client)
+
+    return game_state
 
 
 def persist_game_state(game_state: dict, match_id: int, redis_client) -> None:
@@ -556,6 +882,16 @@ def persist_to_db(game_state: dict, match_id: int) -> None:
                 prop.dev_level = prop_data.get("dev_level", 0)
                 prop.is_mortgaged = prop_data.get("is_mortgaged", False)
                 prop.current_value = prop_data.get("current_value")
+
+        retired_db_props = PropertyModel.query.filter(
+            PropertyModel.match_id == match_id,
+            PropertyModel.board_position.in_(tuple(RETIRED_PROPERTY_POSITIONS)),
+        ).all()
+        for retired_prop in retired_db_props:
+            retired_prop.owner_id = None
+            retired_prop.dev_level = 0
+            retired_prop.is_mortgaged = False
+            retired_prop.current_value = retired_prop.base_price
 
         econ = game_state.get("econ", {})
         gov = Government.query.filter_by(match_id=match_id).first()
@@ -732,9 +1068,20 @@ def resolve_lobbying(game_state: dict, econ: dict, settings: dict, socketio_inst
                 stability_bonus = round(min(0.15, 0.04 * effect_multiplier), 4)
                 econ["treasury_balance"] = round(float(econ.get("treasury_balance", 0)) + treasury_bonus, 2)
                 econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5)) + stability_bonus), 4)
+                active_player_count = sum(1 for player in game_state.get("players", []) if not player.get("is_bankrupt", False))
+                econ, inflation_delta = apply_treasury_lobbying_inflation(
+                    econ,
+                    treasury_bonus,
+                    settings,
+                    active_player_count=active_player_count,
+                )
                 effect_summary = (
                     f"Treasury gained ${treasury_bonus:.2f} and stability improved by {stability_bonus * 100:.0f} points."
                 )
+                if inflation_delta > 0:
+                    effect_summary = (
+                        f"{effect_summary} Inflation rose by {inflation_delta * 100:.2f} points."
+                    )
             elif target == "tax_multiplier_increase":
                 delta = round(min(0.20, base_value * effect_multiplier), 4)
                 econ["tax_multiplier"] = round(min(2.0, float(econ.get("tax_multiplier", 0.15)) + delta), 4)
@@ -759,6 +1106,13 @@ def resolve_lobbying(game_state: dict, econ: dict, settings: dict, socketio_inst
                     total_cost = round(actual_stimulus * len(active_players), 2)
                     stability_bonus = round(min(0.08, 0.025 * effect_multiplier), 4)
                     econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5)) + stability_bonus), 4)
+                    econ, inflation_delta = apply_fiscal_inflation(
+                        econ,
+                        total_cost,
+                        settings,
+                        active_player_count=len(active_players),
+                        category="economic_stimulus",
+                    )
                     effect_summary = (
                         f"Every active player received ${actual_stimulus:.2f}."
                     )
@@ -769,6 +1123,10 @@ def resolve_lobbying(game_state: dict, econ: dict, settings: dict, socketio_inst
                     effect_summary = (
                         f"{effect_summary} Stability improved by {stability_bonus * 100:.0f} points."
                     )
+                    if inflation_delta > 0:
+                        effect_summary = (
+                            f"{effect_summary} Inflation rose by {inflation_delta * 100:.2f} points."
+                        )
                     econ["treasury_balance"] = round(treasury - total_cost, 2)
                 else:
                     success = False
@@ -1013,10 +1371,10 @@ def run_turn(
         tax_amt, _ = apply_income_tax(pre_resolution_player, econ, settings)
         game_state = record_tax_payment(game_state, player_id, "income_tax", tax_amt)
     elif new_position == TAX_LUXURY_POSITION:
-        tax_amt = round(100.0 * (1 + float(econ.get("tax_multiplier", 0.15))), 2)
+        tax_amt, _, _ = apply_luxury_tax(pre_resolution_player, econ)
         game_state = record_tax_payment(game_state, player_id, "luxury_tax", tax_amt)
     elif new_position == TAX_SUPER_POSITION:
-        tax_amt = round(200.0 * (1 + float(econ.get("tax_multiplier", 0.15))), 2)
+        tax_amt, _, _ = apply_super_tax(pre_resolution_player, econ)
         game_state = record_tax_payment(game_state, player_id, "super_tax", tax_amt)
 
     for entry in land_logs:
@@ -1181,6 +1539,7 @@ def end_turn(
     game_state.pop("awaiting_end_turn_player_id", None)
     game_state["dice_rolled_this_turn"] = False
     if game_state.get("status") == "completed":
+        clear_turn_timeout(match_id, redis_client)
         return game_state
 
     is_doubles = dice_result.get("is_doubles", False)
@@ -1203,6 +1562,7 @@ def end_turn(
             },
             room=str(match_id),
         )
+        schedule_turn_timeout(game_state, match_id, redis_client, socketio_instance)
         return game_state
 
     # Advance to next player
@@ -1236,6 +1596,11 @@ def end_turn(
                     f"Welfare paid ${welfare_distribution.get('total_cost', 0):.2f} across "
                     f"{welfare_distribution.get('eligible_count', 0)} players."
                 )
+                inflation_delta = float(welfare_distribution.get("inflation_delta", 0) or 0)
+                if inflation_delta > 0:
+                    welfare_description = (
+                        f"{welfare_description} Inflation rose by {inflation_delta * 100:.2f} points."
+                    )
             else:
                 welfare_description = welfare_distribution.get("reason") or "Welfare payment did not resolve."
 
@@ -1295,6 +1660,7 @@ def end_turn(
         },
         room=str(match_id),
     )
+    schedule_turn_timeout(game_state, match_id, redis_client, socketio_instance)
 
     # 10. LOG_FLUSH
     socketio_instance.emit("log_entry", {"match_id": match_id, "log": game_state.get("log_buffer", [])[-10:]}, room=str(match_id))
@@ -1331,6 +1697,13 @@ def _attempt_player_bailout(
     econ["treasury_balance"] = round_money(treasury_before - bailout_amount)
     game_state["econ"] = econ
     game_state, credit_result = credit_player_with_debt_settlement(game_state, player_id, bailout_amount)
+    game_state = record_bailout_event(
+        game_state,
+        player_id=player_id,
+        amount=bailout_amount,
+        treasury_before=treasury_before,
+        treasury_after=econ["treasury_balance"],
+    )
     rescued_player = credit_result.get("player") or player
 
     game_state = log_and_broadcast(

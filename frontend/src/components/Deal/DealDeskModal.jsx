@@ -385,12 +385,13 @@ function estimateClauseImpact(clause, myPlayerId, counterpartyId, properties, ec
 
 
 export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCounter, onCancel, onClose }) {
-  const { activeDeal, clearActiveDeal, deals, players, properties, settings, economy, setActiveDeal } = useGameStore();
+  const { activeDeal, clearActiveDeal, deals, players, properties, settings, economy, setActiveDeal, saveTradeDealDraft } = useGameStore();
   const [title, setTitle] = useState('');
   const [targetPlayerId, setTargetPlayerId] = useState('');
   const [clauses, setClauses] = useState([createEmptyDealClause()]);
   const [editingCounterId, setEditingCounterId] = useState(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const others = players.filter((player) => player.id !== myPlayerId && !player.bankrupt);
@@ -399,6 +400,12 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
   const selectedDeal = activeDeal || null;
   const selectedCounterpartyId = selectedDeal ? getDealCounterpartyId(selectedDeal, myPlayerId) : null;
   const selectedCounterpartyName = selectedDeal ? getDealCounterpartyName(selectedDeal, myPlayerId, players) : null;
+  const terminationRequestedById = selectedDeal?.termination_requested_by_id ?? null;
+  const terminationRequestedByMe = terminationRequestedById != null && terminationRequestedById === myPlayerId;
+  const terminationRequestedByOther = terminationRequestedById != null && terminationRequestedById !== myPlayerId;
+  const terminationRequesterName = terminationRequestedByMe
+    ? 'You'
+    : (selectedDeal?.termination_requested_by_name || players.find((player) => player.id === terminationRequestedById)?.username || 'The other party');
 
   useEffect(() => {
     if (!targetPlayerId && others[0]?.id != null) {
@@ -433,6 +440,7 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
     setClauses([createEmptyDealClause()]);
     setEditingCounterId(null);
     setError('');
+    setNotice('');
   };
 
   const loadCounterDraft = () => {
@@ -445,10 +453,91 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
     setClauses(draft.clauses.length ? draft.clauses : [createEmptyDealClause()]);
     setEditingCounterId(selectedDeal.id);
     setError('');
+    setNotice('');
+  };
+
+  const buildDealPayload = (counterpartyId) => ({
+    title: title.trim() || undefined,
+    counterparty_id: counterpartyId,
+    clauses: clauses.map((clause) => {
+      const deadline = {
+        metric: clause.deadlineMetric,
+        initial: Number(clause.deadlineAmount || 1) || 1,
+      };
+
+      if (clause.type === 'development_investment') {
+        const investorId = clause.investorSide === 'me' ? myPlayerId : counterpartyId;
+        const recipientId = clause.investorSide === 'me' ? counterpartyId : myPlayerId;
+        return {
+          type: clause.type,
+          investor_id: investorId,
+          recipient_id: recipientId,
+          scope: buildScopeFromClause(clause),
+          config: {
+            escrow_amount: Number(clause.escrowAmount || 0),
+            profit_share_percent: Number(clause.profitSharePercent || 0),
+            max_payout: Number(clause.maxPayout || 0),
+          },
+          deadline,
+        };
+      }
+
+      const beneficiaryId = clause.beneficiarySide === 'me' ? myPlayerId : counterpartyId;
+      const grantorId = clause.beneficiarySide === 'me' ? counterpartyId : myPlayerId;
+      return {
+        type: clause.type,
+        grantor_id: grantorId,
+        beneficiary_id: beneficiaryId,
+        scope: buildScopeFromClause(clause),
+        config: clause.type === 'rent_discount'
+          ? { rent_multiplier: Number(clause.rentMultiplier || 0.5) }
+          : {},
+        deadline,
+      };
+    }),
+  });
+
+  const saveDraftForTrade = () => {
+    setError('');
+    setNotice('');
+
+    const counterpartyId = Number(targetPlayerId || 0);
+    if (!dealsEnabled) {
+      setError('Deals are disabled in this match.');
+      return;
+    }
+    if (!counterpartyId) {
+      setError('Choose a counterparty first.');
+      return;
+    }
+    if (!clauses.length) {
+      setError('Add at least one clause.');
+      return;
+    }
+
+    for (const [index, clause] of clauses.entries()) {
+      const clauseError = validateClauseDraft(clause, index + 1, myPlayerId, counterpartyId, players, properties);
+      if (clauseError) {
+        setError(clauseError);
+        return;
+      }
+    }
+
+    const payload = buildDealPayload(counterpartyId);
+    saveTradeDealDraft({
+      title: payload.title || 'Untitled deal draft',
+      counterparty_id: payload.counterparty_id,
+      clauses: payload.clauses,
+      payload,
+      created_by_player_id: myPlayerId,
+      updated_at: new Date().toISOString(),
+    });
+    setNotice('Draft saved for trade attachments.');
   };
 
   const submitDeal = async () => {
     setError('');
+    setNotice('');
     if (isSubmitting) {
       return;
     }
@@ -475,46 +564,7 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
       }
     }
 
-    const payload = {
-      title: title.trim() || undefined,
-      counterparty_id: counterpartyId,
-      clauses: clauses.map((clause) => {
-        const deadline = {
-          metric: clause.deadlineMetric,
-          initial: Number(clause.deadlineAmount || 1) || 1,
-        };
-
-        if (clause.type === 'development_investment') {
-          const investorId = clause.investorSide === 'me' ? myPlayerId : counterpartyId;
-          const recipientId = clause.investorSide === 'me' ? counterpartyId : myPlayerId;
-          return {
-            type: clause.type,
-            investor_id: investorId,
-            recipient_id: recipientId,
-            scope: buildScopeFromClause(clause),
-            config: {
-              escrow_amount: Number(clause.escrowAmount || 0),
-              profit_share_percent: Number(clause.profitSharePercent || 0),
-              max_payout: Number(clause.maxPayout || 0),
-            },
-            deadline,
-          };
-        }
-
-        const beneficiaryId = clause.beneficiarySide === 'me' ? myPlayerId : counterpartyId;
-        const grantorId = clause.beneficiarySide === 'me' ? counterpartyId : myPlayerId;
-        return {
-          type: clause.type,
-          grantor_id: grantorId,
-          beneficiary_id: beneficiaryId,
-          scope: buildScopeFromClause(clause),
-          config: clause.type === 'rent_discount'
-            ? { rent_multiplier: Number(clause.rentMultiplier || 0.5) }
-            : {},
-          deadline,
-        };
-      }),
-    };
+    const payload = buildDealPayload(counterpartyId);
 
     const submitAction = editingCounterId ? onCounter : onSubmit;
     if (!submitAction) {
@@ -592,6 +642,14 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
                   ))}
                 </div>
 
+                {selectedDeal.status === 'accepted' && terminationRequestedById && (
+                  <div className="rounded-xl border border-amber-700/60 bg-amber-950/20 px-3 py-3 text-sm text-amber-100">
+                    {terminationRequestedByMe
+                      ? `Termination requested. Waiting for ${selectedCounterpartyName || 'the other party'} to confirm.`
+                      : `${terminationRequesterName} requested termination. Confirm to end the deal.`}
+                  </div>
+                )}
+
                 <div className="flex flex-wrap gap-2">
                   {selectedDeal.status === 'proposed' && selectedDeal.counterparty_id === myPlayerId && (
                     <>
@@ -604,7 +662,14 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
                     <button type="button" onClick={() => onCancel?.(selectedDeal.id)} className="btn-danger">Cancel Proposal</button>
                   )}
                   {selectedDeal.status === 'accepted' && (
-                    <button type="button" onClick={() => onCancel?.(selectedDeal.id)} className="btn-ghost">Terminate Deal</button>
+                    <button
+                      type="button"
+                      onClick={() => onCancel?.(selectedDeal.id)}
+                      disabled={terminationRequestedByMe}
+                      className={`btn-ghost ${terminationRequestedByMe ? 'cursor-not-allowed opacity-60' : ''}`}
+                    >
+                      {terminationRequestedByOther ? 'Confirm Termination' : terminationRequestedByMe ? 'Termination Requested' : 'Request Termination'}
+                    </button>
                   )}
                   {selectedDeal.status !== 'proposed' && (
                     <button type="button" onClick={loadCounterDraft} className="btn-ghost">Use As Counter Draft</button>
@@ -671,11 +736,15 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
                 <button type="button" onClick={() => setClauses((previous) => [...previous, createEmptyDealClause()])} className="btn-ghost">
                   Add Clause
                 </button>
+                <button type="button" onClick={saveDraftForTrade} className="btn-ghost" disabled={!others.length || isSubmitting}>
+                  Save For Trade
+                </button>
                 <button type="button" onClick={submitDeal} className="btn-primary" disabled={!others.length || isSubmitting}>
                   {isSubmitting ? 'Sending...' : submitLabel}
                 </button>
               </div>
 
+              {notice && <p className="text-sm text-emerald-400">{notice}</p>}
               {error && <p className="text-sm text-red-400">{error}</p>}
             </div>
           </div>

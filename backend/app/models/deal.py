@@ -19,6 +19,8 @@ class Deal(db.Model):
     last_updated_at = db.Column(db.DateTime, default=datetime.utcnow)
     proposal_version = db.Column(db.Integer, default=1)
     counter_of_deal_id = db.Column(db.Integer, db.ForeignKey("deals.id"), nullable=True)
+    termination_requested_by_id = db.Column(db.Integer, db.ForeignKey("match_players.id"), nullable=True)
+    termination_requested_at = db.Column(db.DateTime, nullable=True)
 
     match = db.relationship("Match", back_populates="deals")
     proposer = db.relationship("MatchPlayer", foreign_keys=[proposer_id])
@@ -41,6 +43,8 @@ class Deal(db.Model):
             "last_updated_at": self.last_updated_at.isoformat() if self.last_updated_at else None,
             "proposal_version": self.proposal_version,
             "counter_of_deal_id": self.counter_of_deal_id,
+            "termination_requested_by_id": self.termination_requested_by_id,
+            "termination_requested_at": self.termination_requested_at.isoformat() if self.termination_requested_at else None,
             "clauses": [clause.to_dict() for clause in (self.clauses or [])],
         }
 

@@ -18,8 +18,8 @@ function seedStore(overrides = {}) {
     properties: {
       1: {
         id: 11,
-        name: 'Lagos',
-        board_position: 1,
+        name: 'Cairo',
+        board_position: 4,
         owner_id: 1,
         current_value: 180,
         dev_level: 1,
@@ -144,7 +144,7 @@ describe('StabilityPanelModal', () => {
     expect(screen.getByText('Overall Rage')).toBeInTheDocument();
     expect(screen.getByText('Properties Close To Revolt')).toBeInTheDocument();
     expect(screen.getByText('Owner: Atlas')).toBeInTheDocument();
-    expect(screen.getAllByText('Lagos').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Cairo').length).toBeGreaterThan(0);
   });
 
   it('submits negotiation funding through the provided callback', () => {

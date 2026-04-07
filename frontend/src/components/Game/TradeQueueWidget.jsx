@@ -23,6 +23,7 @@ function tradeSummary(trade) {
   const requestedMoney = Number(trade?.request_money || 0);
   const offerPropertyCount = Array.isArray(trade?.offer_properties) ? trade.offer_properties.length : 0;
   const requestPropertyCount = Array.isArray(trade?.request_properties) ? trade.request_properties.length : 0;
+  const includedDealDraftCount = Array.isArray(trade?.included_deal_drafts) ? trade.included_deal_drafts.length : 0;
 
   const parts = [];
   if (offeredMoney > 0) {
@@ -37,27 +38,32 @@ function tradeSummary(trade) {
   if (requestPropertyCount > 0) {
     parts.push(`${requestPropertyCount} property${requestPropertyCount === 1 ? '' : 'ies'} requested`);
   }
+  if (includedDealDraftCount > 0) {
+    parts.push(`${includedDealDraftCount} bundled deal draft${includedDealDraftCount === 1 ? '' : 's'}`);
+  }
 
   return parts.length > 0 ? parts.join(' • ') : 'Open trade proposal';
 }
 
 export default function TradeQueueWidget() {
-  const { activeTrade, logEntries, myPlayerId, settings, setActiveModal } = useGameStore();
+  const { trades, logEntries, myPlayerId, settings, setActiveModal, setActiveTrade, removeQueuedModal, clearTrade } = useGameStore();
   const tradingEnabled = settings?.trading_enabled !== false;
 
   const items = useMemo(() => {
     const nextItems = [];
 
-    if (activeTrade?.id != null || activeTrade?.proposer_id != null || activeTrade?.receiver_id != null) {
-      const incoming = activeTrade.receiver_id === myPlayerId;
+    const pendingTrades = (trades || []).slice(0, 3);
+    for (const trade of pendingTrades) {
+      const incoming = trade.receiver_id === myPlayerId;
       nextItems.push({
-        key: `active-${activeTrade.id || `${activeTrade.proposer_id}-${activeTrade.receiver_id}`}`,
+        key: `trade-${trade.id || `${trade.proposer_id}-${trade.receiver_id}`}`,
         kind: incoming ? 'incoming' : 'outgoing',
         title: incoming
-          ? `Incoming from ${activeTrade.proposer_name || 'Player'}`
-          : `Pending with ${activeTrade.receiver_name || 'Player'}`,
-        body: tradeSummary(activeTrade),
-        timestamp: null,
+          ? `Incoming from ${trade.proposer_name || 'Player'}`
+          : `Pending with ${trade.receiver_name || 'Player'}`,
+        body: tradeSummary(trade),
+        timestamp: trade.created_at,
+        trade,
       });
     }
 
@@ -83,12 +89,9 @@ export default function TradeQueueWidget() {
     }
 
     return nextItems;
-  }, [activeTrade, logEntries, myPlayerId]);
+  }, [logEntries, myPlayerId, trades]);
 
-  const overflowCount = Math.max(
-    0,
-    ((activeTrade ? 1 : 0) + (logEntries || []).filter((entry) => ['trade_proposed', 'trade_completed', 'trade_rejected'].includes(entry.type)).length) - items.length,
-  );
+  const overflowCount = Math.max(0, (trades || []).length - items.filter((item) => item.trade).length);
 
   if (!tradingEnabled) {
     return null;
@@ -113,7 +116,15 @@ export default function TradeQueueWidget() {
             <button
               key={item.key}
               type="button"
-              onClick={() => setActiveModal('trade')}
+              onClick={() => {
+                if (item.trade) {
+                  setActiveTrade(item.trade);
+                  removeQueuedModal('trade', item.trade.id);
+                } else {
+                  clearTrade();
+                }
+                setActiveModal('trade');
+              }}
               className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-slate-500 ${statusTone(item.kind)}`}
             >
               <div className="flex items-center justify-between gap-3">

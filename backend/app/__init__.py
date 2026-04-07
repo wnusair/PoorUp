@@ -28,6 +28,7 @@ def _ensure_runtime_schema(app: Flask) -> None:
         db.session.execute(text("ALTER TABLE match_players ADD COLUMN IF NOT EXISTS bot_profile JSONB DEFAULT '{}'::jsonb"))
         db.session.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS offered_lobby_pledges JSONB DEFAULT '[]'::jsonb"))
         db.session.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS requested_lobby_pledges JSONB DEFAULT '[]'::jsonb"))
+        db.session.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS included_deal_drafts JSONB DEFAULT '[]'::jsonb"))
         db.session.execute(
             text(
                 """
@@ -44,11 +45,19 @@ def _ensure_runtime_schema(app: Flask) -> None:
                     cancelled_at TIMESTAMP NULL,
                     last_updated_at TIMESTAMP DEFAULT now(),
                     proposal_version INTEGER DEFAULT 1,
-                    counter_of_deal_id INTEGER NULL REFERENCES deals(id)
+                    counter_of_deal_id INTEGER NULL REFERENCES deals(id),
+                    termination_requested_by_id INTEGER NULL REFERENCES match_players(id) ON DELETE SET NULL,
+                    termination_requested_at TIMESTAMP NULL
                 )
                 """
             )
         )
+        db.session.execute(
+            text(
+                "ALTER TABLE deals ADD COLUMN IF NOT EXISTS termination_requested_by_id INTEGER REFERENCES match_players(id) ON DELETE SET NULL"
+            )
+        )
+        db.session.execute(text("ALTER TABLE deals ADD COLUMN IF NOT EXISTS termination_requested_at TIMESTAMP NULL"))
         db.session.execute(
             text(
                 """

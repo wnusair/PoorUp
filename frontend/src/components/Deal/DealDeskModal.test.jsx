@@ -52,14 +52,14 @@ function setStoreState(balance = 25) {
       { id: 2, username: 'Cinder26', balance: 5.34, bankrupt: false },
     ],
     properties: {
-      7: {
+      9: {
         id: 11,
-        board_position: 7,
-        name: 'Delhi',
+        board_position: 9,
+        name: 'Karachi',
         owner_id: 2,
         property_type: 'property',
         group_color: '#EC4899',
-        base_price: 100,
+        base_price: 120,
         dev_level: 0,
         is_mortgaged: false,
       },

@@ -1,5 +1,5 @@
 import { useGameStore } from '../../hooks/useGameState';
-import { SPACE_ICONS, needsDarkText } from '../../utils/constants';
+import { BOARD_SPACE_SHORT_NAMES, SPACE_ICONS, needsDarkText } from '../../utils/constants';
 import { getBoardDevelopmentDisplay, getDevelopmentLabel } from '../../utils/propertyEconomy';
 
 function UnionBanner({ visible }) {
@@ -126,7 +126,19 @@ function DevelopmentMarker({ level, orientation, incidentType, unionized, econom
 function SpaceLabel({ space, owner, orientation, economy }) {
   const isVertical = orientation === 'left' || orientation === 'right';
   const icon = SPACE_ICONS[space.type];
+  const displayName = BOARD_SPACE_SHORT_NAMES[space.position] || space.name;
   const developmentLevel = Number(space.dev_level ?? space.development_level ?? 0) || 0;
+  const propertyNameStyle = {
+    fontSize: isVertical ? 'clamp(0.56rem, 0.78vw, 0.72rem)' : 'clamp(0.66rem, 0.96vw, 0.84rem)',
+    color: '#e5e7eb',
+    maxWidth: '100%',
+    wordBreak: 'break-word',
+    display: '-webkit-box',
+    WebkitBoxOrient: 'vertical',
+    WebkitLineClamp: isVertical ? 3 : 2,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  };
 
   if (space.type === 'property' || space.type === 'transit') {
     const unionized = Boolean(space.social_unionized);
@@ -140,35 +152,30 @@ function SpaceLabel({ space, owner, orientation, economy }) {
             className="flex-shrink-0"
             style={{
               backgroundColor: space.groupColor,
-              height: isVertical ? '6px' : '8px',
+              height: isVertical ? '7px' : '10px',
               width: '100%',
             }}
           />
         )}
-        <div className="flex-1 flex flex-col items-center justify-center p-0.5 gap-0.5 overflow-hidden">
-          {space.type === 'transit' && (
-            <span className="text-[0.45rem] font-semibold uppercase tracking-[0.16em] text-gray-300">AIR</span>
+        <div className="flex-1 flex flex-col items-center justify-center gap-1 overflow-hidden px-1 py-2">
+          {space.type === 'transit' && icon && (
+            <span style={{ fontSize: isVertical ? '0.95rem' : '1.08rem', lineHeight: 1 }}>{icon}</span>
           )}
           <span
-            className="text-center leading-tight font-medium"
-            style={{
-              fontSize: isVertical ? '0.5rem' : '0.45rem',
-              color: '#e5e7eb',
-              wordBreak: 'break-word',
-              maxWidth: '100%',
-            }}
+            className="text-center leading-tight font-semibold"
+            style={propertyNameStyle}
           >
-            {space.name}
+            {displayName}
           </span>
           {owner && !unionized && incidentType !== 'revolution' && (
             <div
               className="flex items-center justify-center rounded-sm border border-white/20 shadow-sm"
               style={{
-                width: isVertical ? '12px' : '14px',
-                height: isVertical ? '12px' : '14px',
+                minWidth: isVertical ? '14px' : '16px',
+                height: isVertical ? '14px' : '16px',
                 backgroundColor: owner.color_hex || '#555',
                 color: needsDarkText(owner.color_hex || '#555') ? '#111' : '#fff',
-                fontSize: isVertical ? '0.42rem' : '0.45rem',
+                fontSize: isVertical ? '0.46rem' : '0.5rem',
                 fontWeight: 700,
               }}
               title={`Owned by ${owner.username}`}
@@ -180,8 +187,8 @@ function SpaceLabel({ space, owner, orientation, economy }) {
             <div
               className="flex items-center justify-center rounded-sm border border-white/20 bg-cyan-300 text-[0.42rem] font-bold text-slate-950 shadow-sm"
               style={{
-                minWidth: isVertical ? '12px' : '14px',
-                height: isVertical ? '12px' : '14px',
+                minWidth: isVertical ? '14px' : '16px',
+                height: isVertical ? '14px' : '16px',
               }}
               title="Proletariat Union"
             >
@@ -189,7 +196,7 @@ function SpaceLabel({ space, owner, orientation, economy }) {
             </div>
           )}
           {space.basePrice && (
-            <span style={{ fontSize: '0.45rem', color: '#9ca3af' }}>
+            <span style={{ fontSize: isVertical ? '0.52rem' : '0.58rem', color: '#9ca3af', fontWeight: 600 }}>
               ${space.basePrice}
             </span>
           )}
@@ -209,11 +216,11 @@ function SpaceLabel({ space, owner, orientation, economy }) {
 
   // Special spaces (start, jail, free, go_to_jail, chance, community_chest, tax)
   return (
-    <div className="flex flex-col h-full w-full items-center justify-center p-1 gap-0.5 overflow-hidden">
+    <div className="flex h-full w-full flex-col items-center justify-center gap-1 overflow-hidden px-1 py-1.5">
       {icon && (
         <span
-          className="font-bold uppercase tracking-[0.16em] text-gray-200"
-          style={{ fontSize: isVertical ? '0.42rem' : '0.5rem' }}
+          className="text-gray-200"
+          style={{ fontSize: isVertical ? '1rem' : '1.14rem', lineHeight: 1 }}
         >
           {icon}
         </span>
@@ -221,13 +228,17 @@ function SpaceLabel({ space, owner, orientation, economy }) {
       <span
         className="text-center font-semibold leading-tight"
         style={{
-          fontSize: isVertical ? '0.42rem' : '0.48rem',
+          fontSize: isVertical ? 'clamp(0.54rem, 0.76vw, 0.7rem)' : 'clamp(0.68rem, 0.98vw, 0.86rem)',
           color: '#e5e7eb',
           wordBreak: 'break-word',
           maxWidth: '100%',
+          display: '-webkit-box',
+          WebkitBoxOrient: 'vertical',
+          WebkitLineClamp: isVertical ? 3 : 2,
+          overflow: 'hidden',
         }}
       >
-        {space.name}
+        {displayName}
       </span>
     </div>
   );

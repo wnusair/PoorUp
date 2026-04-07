@@ -9,6 +9,22 @@ function sortDeals(deals = []) {
   });
 }
 
+function sortTrades(trades = []) {
+  return [...(trades || [])].sort((left, right) => {
+    const leftStamp = left.created_at || left.resolved_at || '';
+    const rightStamp = right.created_at || right.resolved_at || '';
+    return String(rightStamp).localeCompare(String(leftStamp));
+  });
+}
+
+function sortTradeDealDrafts(drafts = []) {
+  return [...(drafts || [])].sort((left, right) => {
+    const leftStamp = left.updated_at || left.created_at || '';
+    const rightStamp = right.updated_at || right.created_at || '';
+    return String(rightStamp).localeCompare(String(leftStamp));
+  });
+}
+
 export const useGameStore = create(
   subscribeWithSelector((set, get) => ({
   // Game meta
@@ -77,9 +93,12 @@ export const useGameStore = create(
   uprisingEvent: null,
   hyperInflation: null,
   auctionState: null,
+  trades: [],
   activeTrade: null,
   deals: [],
   activeDeal: null,
+  modalQueue: [],
+  tradeDealDrafts: [],
   awaitingEndTurnPlayerId: null,
 
   // Movement animation
@@ -138,18 +157,76 @@ export const useGameStore = create(
   clearPendingAction: () => set({ pendingAction: null }),
 
   setActiveModal: (modal) => set({ activeModal: modal }),
+  enqueueModal: (modal, entityId = null) =>
+    set((state) => {
+      const alreadyQueued = state.modalQueue.some(
+        (entry) => entry.modal === modal && entry.entityId === entityId,
+      );
+      if (alreadyQueued) {
+        return { modalQueue: state.modalQueue };
+      }
+      return {
+        modalQueue: [...state.modalQueue, { modal, entityId }],
+      };
+    }),
+  removeQueuedModal: (modal, entityId = null) =>
+    set((state) => ({
+      modalQueue: state.modalQueue.filter(
+        (entry) => !(entry.modal === modal && (entityId == null || entry.entityId === entityId)),
+      ),
+    })),
   closeModal: () => {
     const state = get();
-    const shouldResumeTrade =
-      state.activeModal === 'card'
-      && state.activeTrade
-      && state.activeTrade.receiver_id === state.myPlayerId
-      && !(state.auctionState?.active);
+    const remainingQueue = [...state.modalQueue];
+    let nextModal = null;
+    let nextTrade = null;
+    let nextDeal = null;
 
-    set({
-      activeModal: shouldResumeTrade ? 'trade' : null,
-      activeDeal: shouldResumeTrade ? state.activeDeal : null,
-    });
+    while (remainingQueue.length > 0) {
+      const queuedEntry = remainingQueue.shift();
+      if (queuedEntry.modal === 'trade') {
+        const queuedTrade = state.trades.find((trade) => trade.id === queuedEntry.entityId);
+        if (!queuedTrade) {
+          continue;
+        }
+        nextModal = 'trade';
+        nextTrade = queuedTrade;
+        break;
+      }
+
+      if (queuedEntry.modal === 'deals') {
+        const queuedDeal = state.deals.find((deal) => deal.id === queuedEntry.entityId);
+        if (!queuedDeal) {
+          continue;
+        }
+        nextModal = 'deals';
+        nextDeal = queuedDeal;
+        break;
+      }
+    }
+
+    const nextState = {
+      activeModal: nextModal,
+      modalQueue: remainingQueue,
+    };
+
+    if (state.activeModal === 'trade') {
+      nextState.activeTrade = null;
+    }
+    if (state.activeModal === 'deals') {
+      nextState.activeDeal = null;
+    }
+
+    if (nextModal === 'trade') {
+      nextState.activeTrade = nextTrade;
+      nextState.activeDeal = null;
+    }
+    if (nextModal === 'deals') {
+      nextState.activeDeal = nextDeal;
+      nextState.activeTrade = null;
+    }
+
+    set(nextState);
   },
 
   setDiceResult: (result) => set({ diceResult: result }),
@@ -189,6 +266,32 @@ export const useGameStore = create(
     })),
   clearAuction: () => set({ auctionState: null }),
 
+  setTrades: (trades) => set((state) => {
+    const nextTrades = sortTrades(trades);
+    const nextActiveTrade = state.activeTrade?.id != null
+      ? nextTrades.find((trade) => trade.id === state.activeTrade.id) || null
+      : state.activeTrade;
+
+    return {
+      trades: nextTrades,
+      activeTrade: nextActiveTrade,
+    };
+  }),
+  upsertTrade: (trade) => set((state) => {
+    const nextTrades = state.trades.some((entry) => entry.id === trade.id)
+      ? state.trades.map((entry) => (entry.id === trade.id ? { ...entry, ...trade } : entry))
+      : [trade, ...state.trades];
+    const sortedTrades = sortTrades(nextTrades);
+    return {
+      trades: sortedTrades,
+      activeTrade: state.activeTrade?.id === trade.id ? { ...(state.activeTrade || {}), ...trade } : state.activeTrade,
+    };
+  }),
+  removeTrade: (tradeId) => set((state) => ({
+    trades: state.trades.filter((trade) => trade.id !== tradeId),
+    activeTrade: state.activeTrade?.id === tradeId ? null : state.activeTrade,
+    modalQueue: state.modalQueue.filter((entry) => !(entry.modal === 'trade' && entry.entityId === tradeId)),
+  })),
   setActiveTrade: (trade) => set({ activeTrade: trade }),
   clearTrade: () => set({ activeTrade: null }),
 
@@ -215,6 +318,24 @@ export const useGameStore = create(
   }),
   setActiveDeal: (deal) => set({ activeDeal: deal }),
   clearActiveDeal: () => set({ activeDeal: null }),
+  saveTradeDealDraft: (draft) => set((state) => {
+    const draftId = draft.id || `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const normalizedDraft = {
+      ...draft,
+      id: draftId,
+      updated_at: draft.updated_at || new Date().toISOString(),
+    };
+
+    return {
+      tradeDealDrafts: sortTradeDealDrafts([
+        normalizedDraft,
+        ...state.tradeDealDrafts.filter((entry) => entry.id !== draftId),
+      ]),
+    };
+  }),
+  deleteTradeDealDraft: (draftId) => set((state) => ({
+    tradeDealDrafts: state.tradeDealDrafts.filter((draft) => draft.id !== draftId),
+  })),
   setAwaitingEndTurnPlayerId: (playerId) => set({ awaitingEndTurnPlayerId: playerId }),
 
   setLobbyData: (data) => set({ lobbyData: data }),

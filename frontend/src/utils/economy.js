@@ -11,6 +11,10 @@ export const TAX_CATEGORIES = [
   ['super_tax', 'Super Tax'],
 ];
 
+export const TURN_TAX_RATE_SHARE = 0.05;
+export const LUXURY_TAX_RATE_SHARE = 0.5;
+export const SUPER_TAX_RATE_SHARE = 1;
+
 export function numberValue(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -22,6 +26,179 @@ export function clampNumber(value, min, max) {
 
 function roundCurrency(value) {
   return Math.round(numberValue(value, 0) * 100) / 100;
+}
+
+export function getEffectiveTaxRate(economy) {
+  const taxMultiplier = Math.max(0, numberValue(economy?.tax_multiplier, 0));
+  if (taxMultiplier <= 0) {
+    return 0;
+  }
+  return taxMultiplier / (1 + taxMultiplier);
+}
+
+export function formatTaxRate(rate) {
+  const percent = clampNumber(numberValue(rate, 0), 0, 1) * 100;
+  return `${percent >= 10 ? percent.toFixed(1) : percent.toFixed(2)}%`;
+}
+
+function calculateCashTaxAmount(balance, rate) {
+  const taxableCash = Math.max(0, numberValue(balance, 0));
+  const safeRate = clampNumber(numberValue(rate, 0), 0, 1);
+  return roundCurrency(Math.min(taxableCash, taxableCash * safeRate));
+}
+
+export function calculateIncomeTaxEstimate(balance, economy) {
+  return calculateCashTaxAmount(balance, getEffectiveTaxRate(economy));
+}
+
+export function calculateTurnTaxEstimate(balance, economy) {
+  return calculateCashTaxAmount(balance, getEffectiveTaxRate(economy) * TURN_TAX_RATE_SHARE);
+}
+
+export function calculateLuxuryTaxEstimate(balance, economy) {
+  return calculateCashTaxAmount(balance, getEffectiveTaxRate(economy) * LUXURY_TAX_RATE_SHARE);
+}
+
+export function calculateSuperTaxEstimate(balance, economy) {
+  return calculateCashTaxAmount(balance, getEffectiveTaxRate(economy) * SUPER_TAX_RATE_SHARE);
+}
+
+export function calculatePropertyTaxEstimate(properties, economy) {
+  const taxMultiplier = Math.max(0, numberValue(economy?.tax_multiplier, 0));
+  return roundCurrency(
+    (properties || []).reduce((runningTotal, property) => {
+      if (!property || property.is_mortgaged) {
+        return runningTotal;
+      }
+      return runningTotal + (numberValue(property.current_value ?? property.base_price, 0) * 0.01 * taxMultiplier);
+    }, 0),
+  );
+}
+
+export function getPropertyTaxTiming(currentRound, settings) {
+  const roundNumber = Math.max(1, numberValue(currentRound, 1));
+  const interval = Math.max(1, numberValue(settings?.property_tax_every_n_rounds, 5));
+  const remainder = roundNumber % interval;
+  const nextRound = remainder === 0 ? roundNumber : roundNumber + (interval - remainder);
+  const roundsUntilDue = Math.max(0, nextRound - roundNumber);
+  const dueThisRound = roundsUntilDue === 0;
+
+  return {
+    interval,
+    dueThisRound,
+    nextRound,
+    roundsUntilDue,
+    when: dueThisRound
+      ? `At the end of your turn this round (round ${roundNumber}).`
+      : `At the end of your turn in round ${nextRound} (${roundsUntilDue} round${roundsUntilDue === 1 ? '' : 's'} away).`,
+  };
+}
+
+export function buildPlayerTaxSchedule({ player, properties, economy, settings, currentRound }) {
+  const balance = numberValue(player?.balance, 0);
+  const effectiveRate = getEffectiveTaxRate(economy);
+  const propertyTiming = getPropertyTaxTiming(currentRound, settings);
+  const turnTaxEnabled = Boolean(settings?.tax_every_turn);
+  const incomeTaxAmount = calculateIncomeTaxEstimate(balance, economy);
+  const propertyTaxAmount = calculatePropertyTaxEstimate(properties, economy);
+  const turnTaxAmount = turnTaxEnabled ? calculateTurnTaxEstimate(balance, economy) : 0;
+  const luxuryTaxAmount = calculateLuxuryTaxEstimate(balance, economy);
+  const superTaxAmount = calculateSuperTaxEstimate(balance, economy);
+  const incomeTaxOnRotation = Boolean(settings?.income_tax_on_pass_go);
+
+  return [
+    {
+      id: 'income_tax',
+      label: 'Income Tax',
+      enabled: true,
+      amount: incomeTaxAmount,
+      perTurnAmount: 0,
+      perRotationAmount: incomeTaxOnRotation ? incomeTaxAmount : 0,
+      when: settings?.income_tax_on_pass_go
+        ? 'When you pass GO and when you land on Income Tax.'
+        : 'When you land on Income Tax.',
+      detail: `${formatTaxRate(effectiveRate)} of your current cash.`,
+    },
+    {
+      id: 'property_tax',
+      label: 'Property Tax',
+      enabled: true,
+      amount: propertyTaxAmount,
+      perTurnAmount: propertyTiming.interval === 1 ? propertyTaxAmount : 0,
+      perRotationAmount: 0,
+      when: propertyTiming.when,
+      detail: 'Based on unmortgaged property value. This is the only tax that can push you into debt.',
+      dueThisRound: propertyTiming.dueThisRound,
+      nextRound: propertyTiming.nextRound,
+      intervalRounds: propertyTiming.interval,
+    },
+    {
+      id: 'turn_tax',
+      label: 'Turn Tax',
+      enabled: turnTaxEnabled,
+      amount: turnTaxAmount,
+      perTurnAmount: turnTaxAmount,
+      perRotationAmount: 0,
+      when: turnTaxEnabled ? 'At the end of every turn.' : 'Disabled in this lobby.',
+      detail: turnTaxEnabled
+        ? `${formatTaxRate(effectiveRate * TURN_TAX_RATE_SHARE)} of your current cash.`
+        : 'No turn tax is configured for this match.',
+    },
+    {
+      id: 'luxury_tax',
+      label: 'Luxury Tax',
+      enabled: true,
+      amount: luxuryTaxAmount,
+      perTurnAmount: 0,
+      perRotationAmount: 0,
+      when: 'When you land on Luxury Tax.',
+      detail: `${formatTaxRate(effectiveRate * LUXURY_TAX_RATE_SHARE)} of your current cash.`,
+    },
+    {
+      id: 'super_tax',
+      label: 'Super Tax',
+      enabled: true,
+      amount: superTaxAmount,
+      perTurnAmount: 0,
+      perRotationAmount: 0,
+      when: 'When you land on Super Tax.',
+      detail: `${formatTaxRate(effectiveRate * SUPER_TAX_RATE_SHARE)} of your current cash.`,
+    },
+  ];
+}
+
+export function buildTaxRuleRows(economy, settings) {
+  const effectiveRate = getEffectiveTaxRate(economy);
+  const taxMultiplier = Math.max(0, numberValue(economy?.tax_multiplier, 0));
+  const propertyTaxInterval = Math.max(1, numberValue(settings?.property_tax_every_n_rounds, 5));
+
+  return [
+    {
+      label: 'Income Tax',
+      enabled: true,
+      formula: `${formatTaxRate(effectiveRate)} of current cash on Income Tax${settings?.income_tax_on_pass_go ? ', and after passing GO' : ''}`,
+    },
+    {
+      label: 'Property Tax',
+      enabled: true,
+      formula: `1% of unmortgaged property value × ${taxMultiplier.toFixed(2)} every ${propertyTaxInterval} rounds`,
+    },
+    {
+      label: 'Turn Tax',
+      enabled: Boolean(settings?.tax_every_turn),
+      formula: `${formatTaxRate(effectiveRate * TURN_TAX_RATE_SHARE)} of current cash at the end of each turn`,
+    },
+    {
+      label: 'Luxury Tax',
+      enabled: true,
+      formula: `${formatTaxRate(effectiveRate * LUXURY_TAX_RATE_SHARE)} of current cash on the Luxury Tax space`,
+    },
+    {
+      label: 'Super Tax',
+      enabled: true,
+      formula: `${formatTaxRate(effectiveRate * SUPER_TAX_RATE_SHARE)} of current cash on the Super Tax space`,
+    },
+  ];
 }
 
 function roundDistribution(rawShares, totalAmount) {
