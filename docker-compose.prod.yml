@@ -1,0 +1,64 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-poorup-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-poorup}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-poorup}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      FLASK_ENV: production
+      ENABLE_HOST_DEBUG_TOOLS: "false"
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-poorup-change-me}@db:5432/${POSTGRES_DB:-poorup}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: https://poorup.wnusair.org
+    expose:
+      - "5000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python app.py
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_ENABLE_HOST_DEBUG_TOOLS: "false"
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
