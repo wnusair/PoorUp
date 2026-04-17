@@ -448,9 +448,48 @@ function normalizePlot(plot = {}) {
     hardship_reasons: Array.isArray(entry.hardship_reasons) ? entry.hardship_reasons : [],
     hardship_triggers: Array.isArray(entry.hardship_triggers) ? entry.hardship_triggers : [],
     invited: Boolean(entry.invited),
+    requested_to_join: Boolean(entry.requested_to_join),
     coalition_member: Boolean(entry.coalition_member),
     wealthiest: Boolean(entry.wealthiest),
     recruitable: Boolean(entry.recruitable),
+    can_request_join: Boolean(entry.can_request_join),
+    is_commander: Boolean(entry.is_commander),
+  });
+
+  const normalizeCommandEntry = (entry = {}) => ({
+    ...entry,
+    player_id: toNumber(entry.player_id, null),
+    joined_round: toNumber(entry.joined_round, 0),
+    contribution_score: toNumber(entry.contribution_score, 0),
+    contribution_round_count: toNumber(entry.contribution_round_count, 0),
+    required_contribution_rounds: toNumber(entry.required_contribution_rounds, 0),
+    successful_actions_supported: toNumber(entry.successful_actions_supported, 0),
+    required_successful_actions: toNumber(entry.required_successful_actions, 0),
+    is_founder: Boolean(entry.is_founder),
+    is_commander: Boolean(entry.is_commander),
+    can_manage_membership: Boolean(entry.can_manage_membership),
+    can_issue_orders: Boolean(entry.can_issue_orders),
+    promotion_ready: Boolean(entry.promotion_ready),
+  });
+
+  const normalizeNextStage = (entry = {}) => ({
+    ...entry,
+    stage: toNumber(entry.stage, 0),
+    all_met: Boolean(entry.all_met),
+    requirements: Array.isArray(entry.requirements)
+      ? entry.requirements.map((requirement = {}) => ({
+          ...requirement,
+          met: Boolean(requirement.met),
+        }))
+      : [],
+  });
+
+  const normalizeJoinRequest = (entry = {}) => ({
+    ...entry,
+    player_id: toNumber(entry.player_id, null),
+    requested_round: toNumber(entry.requested_round, 0),
+    hardship_score: toNumber(entry.hardship_score, 0),
+    hardship_trigger_count: toNumber(entry.hardship_trigger_count, 0),
   });
 
   const normalizeCluster = (cluster = {}) => ({
@@ -509,6 +548,7 @@ function normalizePlot(plot = {}) {
     public: Boolean(plot.public),
     coalition_unlocked: Boolean(plot.coalition_unlocked),
     founder_id: plot.founder_id == null ? null : toNumber(plot.founder_id, null),
+    commander_id: plot.commander_id == null ? null : toNumber(plot.commander_id, null),
     stage: toNumber(plot.stage, 0),
     support: toNumber(plot.support, 0),
     supply: toNumber(plot.supply, 0),
@@ -518,6 +558,8 @@ function normalizePlot(plot = {}) {
     created_round: plot.created_round == null ? null : toNumber(plot.created_round, null),
     public_round: plot.public_round == null ? null : toNumber(plot.public_round, null),
     first_seizure_round: plot.first_seizure_round == null ? null : toNumber(plot.first_seizure_round, null),
+    succession_round: plot.succession_round == null ? null : toNumber(plot.succession_round, null),
+    next_stage: plot.next_stage ? normalizeNextStage(plot.next_stage) : null,
     member_ids: Array.isArray(plot.member_ids) ? plot.member_ids.map((value) => toNumber(value, null)).filter((value) => value != null) : [],
     committed_member_ids: Array.isArray(plot.committed_member_ids) ? plot.committed_member_ids.map((value) => toNumber(value, null)).filter((value) => value != null) : [],
     cadre_ids: Array.isArray(plot.cadre_ids) ? plot.cadre_ids.map((value) => toNumber(value, null)).filter((value) => value != null) : [],
@@ -527,6 +569,11 @@ function normalizePlot(plot = {}) {
     eligible_players: Array.isArray(plot.eligible_players) ? plot.eligible_players.map(normalizePlayerSummary) : [],
     recruitable_players: Array.isArray(plot.recruitable_players) ? plot.recruitable_players.map(normalizePlayerSummary) : [],
     join_invites: plot.join_invites || {},
+    join_requests: Object.fromEntries(
+      Object.entries(plot.join_requests || {}).map(([playerId, entry]) => [String(playerId), normalizeJoinRequest(entry)]),
+    ),
+    commander: plot.commander ? normalizeCommandEntry(plot.commander) : null,
+    command_chain: Array.isArray(plot.command_chain) ? plot.command_chain.map(normalizeCommandEntry) : [],
     seized_properties: Array.isArray(plot.seized_properties) ? plot.seized_properties.map(normalizeSeizedProperty) : [],
     legal_targets: Array.isArray(plot.legal_targets) ? plot.legal_targets.map(normalizeTarget) : [],
     clusters: Array.isArray(plot.clusters) ? plot.clusters.map(normalizeCluster) : [],

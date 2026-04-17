@@ -88,21 +88,21 @@ const AXIS_FALLBACKS = {
   capital_markets: {
     axis: 'capital_markets',
     label: 'Investor Rules',
-    description: 'Broad market lever. Use this when you want all liberal-democracy investor play hotter or calmer, not just the cash payout number.',
+    description: 'Change investor rewards and the instability they add.',
     governmentTypes: ['liberal_democracy'],
     directions: {
       expand: {
         label: 'Expand',
         target: 'market_deregulation',
         policy_name: 'Loosen Investor Rules',
-        description: 'Best when you are leaning on investor deals or want a hotter market. Raises investor mood, but stability falls.',
+        description: 'Raise Investor Mood, increase investor rewards, and increase instability.',
         cost_hint: 280,
       },
       tighten: {
         label: 'Tighten',
         target: 'capital_controls',
         policy_name: 'Tighten Investor Rules',
-        description: 'Best when rivals are farming market perks or the board is overheating. Lowers investor mood and raises stability.',
+        description: 'Lower Investor Mood, reduce investor rewards, and reduce instability.',
         cost_hint: 260,
       },
     },
@@ -110,7 +110,7 @@ const AXIS_FALLBACKS = {
   cash_bonus: {
     axis: 'cash_bonus',
     label: 'Cash Bonus',
-    description: 'Pure spare-cash lever. Use this when you expect to end rounds with money above the reserve floor.',
+    description: 'Change the round-end bonus on cash above the reserve floor.',
     governmentTypes: ['liberal_democracy'],
     directions: {
       increase: {
@@ -124,7 +124,7 @@ const AXIS_FALLBACKS = {
         label: 'Decrease',
         target: 'cash_bonus_decrease',
         policy_name: 'Decrease Cash Bonus',
-        description: 'Cuts everyone\'s spare-cash payout and usually makes the board calmer.',
+        description: 'Lower the round-end bonus on cash kept above the reserve floor.',
         cost_hint: 230,
       },
     },
@@ -132,21 +132,21 @@ const AXIS_FALLBACKS = {
   investor_mood: {
     axis: 'investor_mood',
     label: 'Investor Mood',
-    description: 'Confidence-only lever. Use this when you want market perks stronger or weaker without changing the cash-bonus number.',
+    description: 'Change cash bonuses and build loan returns without changing the cash bonus rate.',
     governmentTypes: ['liberal_democracy'],
     directions: {
       boost: {
         label: 'Boost',
         target: 'investor_mood_increase',
         policy_name: 'Boost Investor Mood',
-        description: 'Raises investor mood directly and strengthens the market side of liberal democracy.',
+        description: 'Raise Investor Mood to strengthen cash bonuses and build loan returns.',
         cost_hint: 240,
       },
       cool: {
         label: 'Cool',
         target: 'investor_mood_decrease',
         policy_name: 'Cool Investor Mood',
-        description: 'Cools investor mood directly and steadies the board without touching the cash-bonus rate.',
+        description: 'Lower Investor Mood to weaken cash bonuses and build loan returns.',
         cost_hint: 220,
       },
     },
@@ -196,35 +196,35 @@ const AXIS_FALLBACKS = {
 };
 
 const AXIS_TOOLTIPS = {
-  capital_markets: 'This controls what outside capital is allowed to do. Use Investor Mood if you only want to nudge confidence, or Cash Bonus if you want to change the round-end payout directly.',
-  cash_bonus: 'Cash Bonus is the round-end percentage paid on money you keep above the reserve floor.',
-  investor_mood: 'Investor Mood is market confidence. Higher mood makes liberal-democracy cash systems stronger, but it can also add social pressure.',
+  capital_markets: 'This changes how strong investor rewards are overall and how much instability they add.',
+  cash_bonus: 'This is the round-end percent paid on cash you keep above the reserve floor.',
+  investor_mood: 'This changes how strong cash bonuses and build loan payback caps are.',
 };
 
 const DIRECTION_TOOLTIPS = {
-  market_deregulation: 'Broadest upside lever. Use this when you want stronger investor play overall and can tolerate a hotter board.',
-  capital_controls: 'Broadest safety lever. Use this when you want to cool rival investor play and buy back stability.',
-  cash_bonus_increase: 'Most direct personal payout lever. This is the one to back if you expect to hold spare cash through round end.',
-  cash_bonus_decrease: 'Use this when rivals are farming passive cash and you want a calmer board instead.',
-  investor_mood_increase: 'Use this when you want stronger market perks without changing the cash-bonus percentage directly.',
-  investor_mood_decrease: 'Use this when confidence is too hot and you want to calm the board without changing the cash-bonus percentage directly.',
+  market_deregulation: 'Raises Investor Mood and investor rewards, but also increases instability.',
+  capital_controls: 'Lowers Investor Mood and reduces instability.',
+  cash_bonus_increase: 'Raises the round-end bonus on cash kept above the reserve floor.',
+  cash_bonus_decrease: 'Lowers the round-end bonus on cash kept above the reserve floor.',
+  investor_mood_increase: 'Raises Investor Mood, which strengthens cash bonuses and build loan payback caps.',
+  investor_mood_decrease: 'Lowers Investor Mood, which weakens cash bonuses and build loan payback caps.',
 };
 
 const LIBERAL_DEMOCRACY_GUIDE = [
   {
     title: 'Cash Bonus',
     headline: 'Direct payout button',
-    body: 'Best when you expect to finish rounds with cash above the reserve floor. This is the clearest personal money-maker.',
+    body: 'Use this if you expect to finish the round with cash above the reserve floor.',
   },
   {
     title: 'Investor Mood',
     headline: 'Confidence only',
-    body: 'Use this when you want stronger or weaker market perks without changing the cash-bonus number itself.',
+    body: 'Use this to change cash bonuses and build loan returns without changing the cash bonus rate itself.',
   },
   {
     title: 'Investor Rules',
     headline: 'Broad market heat',
-    body: 'Looser rules heat the board and push investor play harder. Tighter rules cool the board and cut rivals\' market edge.',
+    body: 'Looser rules raise investor rewards and instability. Tighter rules lower both.',
   },
 ];
 

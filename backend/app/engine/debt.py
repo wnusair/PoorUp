@@ -6,8 +6,97 @@ from datetime import datetime
 import uuid
 
 
+PLOT_POVERTY_DEFAULT_BALANCE_CAP = 150.0
+PLOT_POVERTY_DEFAULT_DEV_CAP = 3
+
+
 def round_money(value: float | int | None) -> float:
     return round(float(value or 0), 2)
+
+
+def is_plot_poverty_locked(player: dict | None) -> bool:
+    return bool((player or {}).get("plot_locked_poverty", False))
+
+
+def get_plot_poverty_balance_cap(player: dict | None) -> float:
+    if not is_plot_poverty_locked(player):
+        return 0.0
+    cap = round_money((player or {}).get("plot_poverty_balance_cap", PLOT_POVERTY_DEFAULT_BALANCE_CAP))
+    return cap if cap > 0 else PLOT_POVERTY_DEFAULT_BALANCE_CAP
+
+
+def get_plot_development_cap(player: dict | None) -> int | None:
+    if not is_plot_poverty_locked(player):
+        return None
+    return max(0, int((player or {}).get("plot_max_development_level", PLOT_POVERTY_DEFAULT_DEV_CAP) or PLOT_POVERTY_DEFAULT_DEV_CAP))
+
+
+def _normalize_plot_poverty_player(player: dict) -> dict:
+    updated_player = dict(player)
+    if not is_plot_poverty_locked(updated_player):
+        return updated_player
+
+    updated_player["plot_poverty_balance_cap"] = get_plot_poverty_balance_cap(updated_player)
+    updated_player["plot_max_development_level"] = get_plot_development_cap(updated_player)
+    savings_balance = round_money(updated_player.get("plot_savings_balance", 0))
+    balance = round_money(updated_player.get("balance", 0))
+    balance_cap = get_plot_poverty_balance_cap(updated_player)
+
+    if balance > balance_cap:
+        savings_balance = round_money(savings_balance + (balance - balance_cap))
+        balance = balance_cap
+
+    updated_player["balance"] = balance
+    updated_player["plot_savings_balance"] = savings_balance
+    return updated_player
+
+
+def enforce_plot_poverty_constraints(game_state: dict) -> dict:
+    next_state = dict(game_state)
+    next_state["players"] = [
+        _normalize_plot_poverty_player(dict(player))
+        for player in game_state.get("players", [])
+    ]
+    return next_state
+
+
+def apply_plot_poverty_rescue(game_state: dict, player_id: int) -> tuple[dict, dict | None, dict]:
+    next_state = dict(game_state)
+    player = get_player_state(next_state, player_id)
+    if player is None or not is_plot_poverty_locked(player):
+        return next_state, player, {"balance_rescue": 0.0, "debt_rescue": 0.0}
+
+    updated_player = dict(player)
+    savings_balance = round_money(updated_player.get("plot_savings_balance", 0))
+    balance = round_money(updated_player.get("balance", 0))
+    balance_rescue = 0.0
+    debt_rescue = 0.0
+
+    if savings_balance > 0 and balance < 0:
+        balance_rescue = round_money(min(savings_balance, abs(balance)))
+        savings_balance = round_money(savings_balance - balance_rescue)
+        balance = round_money(balance + balance_rescue)
+
+    updated_player["balance"] = balance
+    updated_player["plot_savings_balance"] = savings_balance
+    next_state = _replace_player(next_state, updated_player)
+
+    total_pending_debt = get_total_pending_player_debt(next_state, player_id)
+    if savings_balance > 0 and total_pending_debt > 0:
+        debt_rescue = round_money(min(savings_balance, total_pending_debt))
+        if debt_rescue > 0:
+            next_state, settlement = settle_player_debts(next_state, player_id, debt_rescue)
+            debt_rescue = round_money(settlement.get("settled_amount", 0))
+            updated_player = get_player_state(next_state, player_id) or updated_player
+            updated_player = dict(updated_player)
+            updated_player["plot_savings_balance"] = round_money(max(0.0, savings_balance - debt_rescue))
+            next_state = _replace_player(next_state, updated_player)
+
+    updated_player = get_player_state(next_state, player_id)
+    return next_state, updated_player, {
+        "balance_rescue": balance_rescue,
+        "debt_rescue": debt_rescue,
+    }
 
 
 def ensure_pending_debts(game_state: dict) -> dict:
@@ -56,6 +145,7 @@ def set_player_balance(game_state: dict, player_id: int, balance: float) -> tupl
 
     updated_player = dict(player)
     updated_player["balance"] = round_money(balance)
+    updated_player = _normalize_plot_poverty_player(updated_player)
     return _replace_player(game_state, updated_player), updated_player
 
 

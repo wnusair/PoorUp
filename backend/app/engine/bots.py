@@ -109,6 +109,8 @@ BOT_NAME_PARTS = [
     "Vanta",
 ]
 BOT_TASK_TTL_SECONDS = 120
+BOT_STATE_EVALUATION_DEBOUNCE_SECONDS = 0.35
+BOT_STATE_EVALUATION_TTL_SECONDS = 5
 TRADE_MIN_INCREMENT = 25.0
 SOCIAL_TARGET_PRIORITY = {
     "stabilization_fund": 1,
@@ -623,20 +625,53 @@ def _queue_bot_state_evaluation(
                 replace_existing=replace_existing,
             )
 
-    queue_bot_trade_responses(match_id, replace_existing=replace_existing)
-    queue_bot_deal_responses(match_id, replace_existing=replace_existing)
-    queue_bot_auction_reactions(match_id, game_state=game_state, reason=reason, replace_existing=replace_existing)
+    settings = game_state.get("settings", {})
+    queue_bot_trade_responses(match_id, settings=settings, replace_existing=replace_existing)
+    queue_bot_deal_responses(match_id, settings=settings, replace_existing=replace_existing)
+    queue_bot_auction_reactions(match_id, game_state=game_state, settings=settings, reason=reason, replace_existing=replace_existing)
+
+
+def _bot_state_evaluation_key(match_id: int) -> str:
+    return f"game:{match_id}:bot_state_evaluation:pending"
+
+
+def _run_debounced_state_evaluation(app_obj, redis_key: str, token: str, match_id: int, reason: str) -> None:
+    socketio.sleep(BOT_STATE_EVALUATION_DEBOUNCE_SECONDS)
+
+    with app_obj.app_context():
+        if redis_client.get(redis_key) != token:
+            return
+        redis_client.delete(redis_key)
+        _queue_bot_state_evaluation(match_id, None, reason, replace_existing=True)
 
 
 def queue_bot_state_evaluation(match_id: int, game_state: dict | None = None, reason: str = "state_update") -> None:
-    _queue_bot_state_evaluation(match_id, game_state, reason, replace_existing=True)
+    active_state = game_state or load_game_state(match_id, redis_client)
+    if not active_state or active_state.get("status") != "active":
+        return
+
+    redis_key = _bot_state_evaluation_key(match_id)
+    if redis_client.get(redis_key):
+        return
+
+    token = uuid.uuid4().hex
+    redis_client.set(redis_key, token, ex=BOT_STATE_EVALUATION_TTL_SECONDS)
+    app_obj = current_app._get_current_object()
+    socketio.start_background_task(
+        _run_debounced_state_evaluation,
+        app_obj,
+        redis_key,
+        token,
+        match_id,
+        reason,
+    )
 
 
 def recover_bot_state_evaluation(match_id: int, game_state: dict | None = None, reason: str = "state_recovery") -> None:
     _queue_bot_state_evaluation(match_id, game_state, reason, replace_existing=False)
 
 
-def queue_bot_trade_responses(match_id: int, *, replace_existing: bool = True) -> None:
+def queue_bot_trade_responses(match_id: int, *, settings: dict | None = None, replace_existing: bool = True) -> None:
     if has_active_auction(match_id):
         return
 
@@ -653,11 +688,13 @@ def queue_bot_trade_responses(match_id: int, *, replace_existing: bool = True) -
                 receiver.id,
                 f"trade_response:{trade.id}",
                 "trade_response",
+                match_player=receiver,
+                settings=settings,
                 replace_existing=replace_existing,
             )
 
 
-def queue_bot_deal_responses(match_id: int, *, replace_existing: bool = True) -> None:
+def queue_bot_deal_responses(match_id: int, *, settings: dict | None = None, replace_existing: bool = True) -> None:
     try:
         pending_deals = (
             Deal.query.filter_by(match_id=match_id, status="proposed")
@@ -675,6 +712,8 @@ def queue_bot_deal_responses(match_id: int, *, replace_existing: bool = True) ->
                 receiver.id,
                 f"deal_response:{deal.id}",
                 "deal_response",
+                match_player=receiver,
+                settings=settings,
                 replace_existing=replace_existing,
             )
 
@@ -682,6 +721,7 @@ def queue_bot_deal_responses(match_id: int, *, replace_existing: bool = True) ->
 def queue_bot_auction_reactions(
     match_id: int,
     game_state: dict | None = None,
+    settings: dict | None = None,
     reason: str = "auction",
     *,
     replace_existing: bool = True,
@@ -714,6 +754,9 @@ def queue_bot_auction_reactions(
                 player["id"],
                 f"auction_bid:{prop_id}",
                 reason,
+                match_player=record,
+                profile=profile,
+                settings=settings,
                 replace_existing=replace_existing,
             )
 
@@ -2692,8 +2735,10 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     committed_member_ids = {int(value) for value in (plot.get("committed_member_ids") or []) if value is not None}
     coalition_member_ids = {int(value) for value in (plot.get("coalition_member_ids") or []) if value is not None}
     invite_pending = bool((plot.get("join_invites") or {}).get(str(player_id)))
+    request_pending = bool((plot.get("join_requests") or {}).get(str(player_id)))
     defection_cooldown_until = int(player.get("plot_defection_cooldown_until", 0) or 0)
     plot_role = str(player.get("plot_role") or "")
+    commander_id = int(((plot.get("commander") or {}).get("player_id") or plot.get("commander_id") or 0) or 0)
     seized_properties = sorted(
         [entry for entry in (plot.get("seized_properties") or []) if entry.get("property_id") is not None],
         key=lambda entry: (
@@ -2717,6 +2762,24 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         ),
         reverse=True,
     )
+    pending_join_requests = sorted(
+        [entry for entry in (plot.get("join_requests") or {}).values() if int(entry.get("player_id") or 0) != player_id],
+        key=lambda entry: (
+            int(entry.get("hardship_trigger_count", 0) or 0),
+            int(entry.get("hardship_score", 0) or 0),
+            -int(entry.get("requested_round", 0) or 0),
+        ),
+        reverse=True,
+    )
+    clusters = sorted(
+        [entry for entry in (plot.get("clusters") or []) if entry.get("cluster_id")],
+        key=lambda entry: (
+            int(entry.get("size", 0) or 0),
+            float(entry.get("avg_entrenchment", 0) or 0),
+            -int(entry.get("reintegration_pressure", 0) or 0),
+        ),
+        reverse=True,
+    )
     region_order = _plot_region_order(plot)
 
     if player_id not in member_ids:
@@ -2726,6 +2789,8 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
                 return {"type": "plot_join", "intent": "accept", "reason": "invited_alignment"}
         if player_id in coalition_member_ids:
             return _choose_plot_counter_action(player, plot, profile)
+        if not request_pending and current_round > defection_cooldown_until and (bool(plot.get("public")) or hardship_triggers >= 2):
+            return {"type": "plot_join", "intent": "request", "reason": "self_recruitment_under_pressure"}
         if bool(plot.get("public")) and bool(plot.get("coalition_unlocked")):
             return {
                 "type": "plot_counter_action",
@@ -2746,13 +2811,42 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             }
         return None
 
-    if seized_properties and int(seized_properties[0].get("reintegration_progress", 0) or 0) > 0 and float(plot.get("supply", 0) or 0) >= 3:
+    if commander_id == player_id and pending_join_requests:
+        viable_request = next(
+            (
+                entry
+                for entry in pending_join_requests
+                if float((next((candidate for candidate in game_state.get("players", []) if int(candidate.get("id") or 0) == int(entry.get("player_id") or 0)), {}) or {}).get("balance", 0) or 0)
+                >= (0.0 if int(entry.get("hardship_trigger_count", 0) or 0) >= 2 else 150.0)
+            ),
+            None,
+        )
+        if viable_request is not None:
+            return {
+                "type": "plot_join",
+                "intent": "accept_request",
+                "target_player_id": int(viable_request.get("player_id") or 0),
+                "reason": "expand_command_structure",
+            }
+
+    highest_reintegration = int(seized_properties[0].get("reintegration_progress", 0) or 0) if seized_properties else 0
+    if seized_properties and highest_reintegration >= 70 and float(plot.get("supply", 0) or 0) >= 3:
         return {
             "type": "plot_action",
             "action_type": "defend_reintegration",
             "property_id": int(seized_properties[0]["property_id"]),
             "reason": "hold_revolutionary_control",
         }
+
+    if int(plot.get("stage", 0) or 0) >= 4 and clusters and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("supply", 0) or 0) >= 4:
+        shallow_cluster = next((entry for entry in clusters if float(entry.get("avg_entrenchment", 0) or 0) < 2.4), None)
+        if shallow_cluster is not None:
+            return {
+                "type": "plot_action",
+                "action_type": "increase_entrenchment",
+                "cluster_id": shallow_cluster.get("cluster_id"),
+                "reason": "stabilize_existing_territory",
+            }
 
     if player_id in committed_member_ids and int(plot.get("stage", 0) or 0) >= 3 and legal_targets and float(plot.get("support", 0) or 0) >= 6 and float(plot.get("supply", 0) or 0) >= 4:
         return {
@@ -2762,8 +2856,24 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             "reason": "expand_revolutionary_control",
         }
 
+    expansion_cluster = next((entry for entry in clusters if not bool(entry.get("blockaded"))), None)
+    adjacent_expansion_exists = any(bool(entry.get("adjacent_to_control")) for entry in legal_targets)
+    if (
+        expansion_cluster is not None
+        and adjacent_expansion_exists
+        and int(plot.get("stage", 0) or 0) >= 3
+        and float(plot.get("support", 0) or 0) >= 3
+        and float(plot.get("supply", 0) or 0) >= 2
+    ):
+        return {
+            "type": "plot_action",
+            "action_type": "spread_to_adjacent_territory",
+            "cluster_id": expansion_cluster.get("cluster_id"),
+            "reason": "prepare_adjacent_expansion",
+        }
+
     fortify_target = next(
-        (entry for entry in seized_properties if int(entry.get("entrenchment", 0) or 0) < 2),
+        (entry for entry in seized_properties if int(entry.get("entrenchment", 0) or 0) < 2 or int(entry.get("reintegration_progress", 0) or 0) >= 35),
         None,
     )
     if fortify_target is not None and int(plot.get("stage", 0) or 0) >= 3 and float(plot.get("supply", 0) or 0) >= 2:
@@ -2804,6 +2914,13 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         }
 
     if int(plot.get("stage", 0) or 0) >= 2 and float(plot.get("support", 0) or 0) >= 2:
+        if int(plot.get("stage", 0) or 0) >= 3 and float(plot.get("supply", 0) or 0) < 4:
+            return {
+                "type": "plot_action",
+                "action_type": "stockpile_supply",
+                "region": region_order[0] if region_order else None,
+                "reason": "build_logistics_before_expansion",
+            }
         agitation_targets = []
         for prop in game_state.get("properties", []):
             prop_id = int(prop.get("id") or 0)
@@ -2982,6 +3099,9 @@ def choose_development_target(player: dict, game_state: dict, profile: dict[str,
     social_props = (game_state.get("social") or {}).get("properties") or {}
     for prop in get_player_properties(player["id"], game_state):
         if prop.get("property_type") != "property" or prop.get("is_mortgaged"):
+            continue
+        max_dev_level = player.get("plot_max_development_level")
+        if player.get("plot_locked_poverty") and max_dev_level is not None and int(prop.get("dev_level", 0) or 0) >= int(max_dev_level):
             continue
         if property_private_actions_locked(game_state, prop.get("id")):
             continue
@@ -3519,14 +3639,20 @@ def _schedule_player_task(
     task_name: str,
     reason: str,
     *,
+    match_player: MatchPlayer | None = None,
+    profile: dict[str, Any] | None = None,
+    settings: dict | None = None,
     replace_existing: bool = True,
 ) -> None:
-    match_player = MatchPlayer.query.get(player_id)
+    match_player = match_player or MatchPlayer.query.get(player_id)
     if match_player is None or not match_player.is_bot or match_player.is_bankrupt:
         return
 
     app_obj = current_app._get_current_object()
-    profile = ensure_bot_profile(match_player, (load_game_state(match_id, redis_client) or {}).get("settings", {}))
+    effective_settings = settings
+    if effective_settings is None:
+        effective_settings = (load_game_state(match_id, redis_client) or {}).get("settings", {})
+    profile = profile or ensure_bot_profile(match_player, effective_settings)
     delay = _resolve_delay(profile, task_name)
     token = uuid.uuid4().hex
     redis_key = f"game:{match_id}:bot_task:{player_id}:{task_name}"
@@ -3993,6 +4119,9 @@ def _bot_develop_property(match_id: int, player_id: int, property_id: int) -> bo
     if property_is_fully_developed(prop, game_state):
         return False
     new_level = int(prop.get("dev_level", 0) or 0) + 1
+    max_dev_level = player.get("plot_max_development_level")
+    if player.get("plot_locked_poverty") and max_dev_level is not None and int(new_level) > int(max_dev_level):
+        return False
     cost = calculate_development_cost(prop.get("base_price", 0), new_level, game_state)
 
     game_state, escrow_result = spend_investment_escrow(

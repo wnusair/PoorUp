@@ -145,6 +145,12 @@ export default function GameLayout({ socketActions, myPlayerId }) {
           onMortgage={socketActions?.mortgageProperty}
           onSellHouse={socketActions?.sellHouse}
           onUnmortgage={socketActions?.unmortgageProperty}
+          onPlotAction={socketActions?.plotAction}
+          onPlotCounterAction={socketActions?.plotCounterAction}
+          onOpenPlotPanel={() => {
+            setSelectedSpace(null);
+            setActiveModal('plot');
+          }}
           onClose={() => setSelectedSpace(null)}
         />
       )}

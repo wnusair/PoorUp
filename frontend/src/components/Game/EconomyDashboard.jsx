@@ -88,7 +88,7 @@ export default function EconomyDashboard() {
           <div className="flex items-center justify-between text-xs">
             <StatLabel
               label="Investor Mood"
-              tooltip="This shows how friendly the current market is. Higher mood means your liberal-democracy cash systems are working better."
+              tooltip="Higher Investor Mood increases cash bonuses and build loan payback caps."
             />
             <span className="text-cyan-300 font-mono">{(Number(market_confidence) || 0).toFixed(1)}</span>
           </div>
@@ -96,7 +96,7 @@ export default function EconomyDashboard() {
           <div className="flex items-center justify-between text-xs">
             <StatLabel
               label="Cash Bonus"
-              tooltip={`At the end of the round, money you kept above ${formatMoney(capital_yield_reserve_floor)} earns this bonus. Spending down to zero means missing it.`}
+              tooltip={`At round end, cash kept above ${formatMoney(capital_yield_reserve_floor)} earns this bonus.`}
             />
             <span className="text-amber-300 font-mono">{((Number(capital_yield_rate) || 0) * 100).toFixed(2)}%</span>
           </div>
@@ -104,7 +104,7 @@ export default function EconomyDashboard() {
           <div className="flex items-center justify-between text-xs">
             <StatLabel
               label="Build Loan Bonus"
-              tooltip="Build loans can pay back more than their base cap in liberal democracy. Higher numbers make investing in someone else's upgrades more attractive."
+              tooltip="This increases the maximum total payback on build loans above their base cap."
             />
             <span className="text-emerald-300 font-mono">+{Math.max(0, (Number(private_equity_bonus_multiplier) - 1) * 100).toFixed(0)}%</span>
           </div>

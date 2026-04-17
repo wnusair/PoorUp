@@ -224,8 +224,8 @@ function PropertyDetailPanel({ property }) {
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <MetricCard label="Property Pressure" tooltip="How close this property is to a protest, strike, uprising, or takeover." value={`${percent(property.tension)}%`} tone={percent(property.tension) >= 80 ? 'text-rose-300' : 'text-slate-100'} />
-        <MetricCard label="Area Pressure" tooltip="How unstable the wider owner-and-region area is. High area pressure makes nearby trouble more likely to spread." value={`${percent(property.territory_instability)}%`} tone={percent(property.territory_instability) >= 75 ? 'text-orange-300' : 'text-slate-100'} />
+        <MetricCard label="Property Pressure" tooltip="How close this property is to its next protest, strike, uprising, or takeover." value={`${percent(property.tension)}%`} tone={percent(property.tension) >= 80 ? 'text-rose-300' : 'text-slate-100'} />
+        <MetricCard label="Area Pressure" tooltip="How likely unrest here is to spread across this owner's nearby properties in the region." value={`${percent(property.territory_instability)}%`} tone={percent(property.territory_instability) >= 75 ? 'text-orange-300' : 'text-slate-100'} />
         <MetricCard label="Development" value={String(Number(property.dev_level) || 0)} />
         <MetricCard label="Current Value" value={formatMoney(property.current_value || 0)} />
       </div>

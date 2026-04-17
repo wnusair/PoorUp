@@ -25,6 +25,81 @@ function sortTradeDealDrafts(drafts = []) {
   });
 }
 
+const MAX_LOG_ENTRIES = 200;
+const MAX_TRACKED_TRADES = 40;
+const MAX_RESOLVED_DEALS = 40;
+const TERMINAL_DEAL_STATUSES = new Set(['rejected', 'cancelled', 'expired', 'terminated']);
+
+function ensureStoreEntryId(entry, fallbackIndex = 0) {
+  if (!entry || entry.id != null) {
+    return entry;
+  }
+
+  const timestamp = entry.timestamp || entry.created_at || entry.updated_at || 'entry';
+  const summary = entry.message || entry.description || entry.type || entry.status || 'item';
+  return {
+    ...entry,
+    id: `${timestamp}:${summary}:${fallbackIndex}`,
+  };
+}
+
+function capLogEntries(entries = []) {
+  return (entries || [])
+    .slice(-MAX_LOG_ENTRIES)
+    .map((entry, index) => ensureStoreEntryId(entry, index));
+}
+
+function getPinnedModalIds(modalQueue = [], modalName) {
+  return new Set(
+    (modalQueue || [])
+      .filter((entry) => entry.modal === modalName && entry.entityId != null)
+      .map((entry) => entry.entityId),
+  );
+}
+
+function capTrades(trades = [], state = {}) {
+  const sortedTrades = sortTrades(trades);
+  const pinnedIds = getPinnedModalIds(state.modalQueue, 'trade');
+  if (state.activeTrade?.id != null) {
+    pinnedIds.add(state.activeTrade.id);
+  }
+
+  let recentCount = 0;
+  return sortedTrades.filter((trade) => {
+    if (pinnedIds.has(trade.id)) {
+      return true;
+    }
+    if (recentCount >= MAX_TRACKED_TRADES) {
+      return false;
+    }
+    recentCount += 1;
+    return true;
+  });
+}
+
+function capDeals(deals = [], state = {}) {
+  const sortedDeals = sortDeals(deals);
+  const pinnedIds = getPinnedModalIds(state.modalQueue, 'deals');
+  if (state.activeDeal?.id != null) {
+    pinnedIds.add(state.activeDeal.id);
+  }
+
+  let resolvedCount = 0;
+  return sortedDeals.filter((deal) => {
+    if (pinnedIds.has(deal.id)) {
+      return true;
+    }
+    if (!TERMINAL_DEAL_STATUSES.has(deal.status)) {
+      return true;
+    }
+    if (resolvedCount >= MAX_RESOLVED_DEALS) {
+      return false;
+    }
+    resolvedCount += 1;
+    return true;
+  });
+}
+
 export const useGameStore = create(
   subscribeWithSelector((set, get) => ({
   // Game meta
@@ -150,9 +225,9 @@ export const useGameStore = create(
 
   addLogEntry: (entry) =>
     set((state) => ({
-      logEntries: [...state.logEntries, { ...entry, id: Date.now() + Math.random() }],
+      logEntries: capLogEntries([...state.logEntries, ensureStoreEntryId(entry, state.logEntries.length)]),
     })),
-  setLogEntries: (entries) => set({ logEntries: entries }),
+  setLogEntries: (entries) => set({ logEntries: capLogEntries(entries) }),
 
   setPendingAction: (action) => set({ pendingAction: action }),
   clearPendingAction: () => set({ pendingAction: null }),
@@ -268,7 +343,7 @@ export const useGameStore = create(
   clearAuction: () => set({ auctionState: null }),
 
   setTrades: (trades) => set((state) => {
-    const nextTrades = sortTrades(trades);
+    const nextTrades = capTrades(trades, state);
     const nextActiveTrade = state.activeTrade?.id != null
       ? nextTrades.find((trade) => trade.id === state.activeTrade.id) || null
       : state.activeTrade;
@@ -279,12 +354,12 @@ export const useGameStore = create(
     };
   }),
   upsertTrade: (trade) => set((state) => {
-    const nextTrades = state.trades.some((entry) => entry.id === trade.id)
+    const mergedTrades = state.trades.some((entry) => entry.id === trade.id)
       ? state.trades.map((entry) => (entry.id === trade.id ? { ...entry, ...trade } : entry))
       : [trade, ...state.trades];
-    const sortedTrades = sortTrades(nextTrades);
+    const nextTrades = capTrades(mergedTrades, state);
     return {
-      trades: sortedTrades,
+      trades: nextTrades,
       activeTrade: state.activeTrade?.id === trade.id ? { ...(state.activeTrade || {}), ...trade } : state.activeTrade,
     };
   }),
@@ -297,7 +372,7 @@ export const useGameStore = create(
   clearTrade: () => set({ activeTrade: null }),
 
   setDeals: (deals) => set((state) => {
-    const nextDeals = sortDeals(deals);
+    const nextDeals = capDeals(deals, state);
     const nextActiveDeal = state.activeDeal?.id != null
       ? nextDeals.find((deal) => deal.id === state.activeDeal.id) || state.activeDeal
       : state.activeDeal;
@@ -308,12 +383,12 @@ export const useGameStore = create(
     };
   }),
   upsertDeal: (deal) => set((state) => {
-    const nextDeals = state.deals.some((entry) => entry.id === deal.id)
+    const mergedDeals = state.deals.some((entry) => entry.id === deal.id)
       ? state.deals.map((entry) => (entry.id === deal.id ? { ...entry, ...deal } : entry))
       : [deal, ...state.deals];
-    const sortedDeals = sortDeals(nextDeals);
+    const nextDeals = capDeals(mergedDeals, state);
     return {
-      deals: sortedDeals,
+      deals: nextDeals,
       activeDeal: state.activeDeal?.id === deal.id ? { ...(state.activeDeal || {}), ...deal } : state.activeDeal,
     };
   }),

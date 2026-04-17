@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import json
 from unittest.mock import patch
 
 from flask import Flask
@@ -23,6 +24,10 @@ class FakeRedis:
 
     def set(self, key, value, ex=None):
         self.values[key] = value
+
+    def delete(self, key):
+        self.values.pop(key, None)
+        self.lists.pop(key, None)
 
     def rpush(self, key, value):
         self.lists.setdefault(key, []).append(value)
@@ -267,6 +272,88 @@ class GameLoopTurnTimeoutTests(unittest.TestCase):
             event == 'log_entry' and 'Cairo was declined' in payload.get('description', '')
             for event, payload, _room in socket.emits
         ))
+
+
+class GameStateSnapshotPreparationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = Flask(__name__)
+        cls.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        cls.app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+        cls.app.config['SECRET_KEY'] = 'test'
+        db.init_app(cls.app)
+
+    def setUp(self):
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        self.addCleanup(self.app_context.pop)
+
+    def test_broadcast_reuses_prepared_snapshot_from_persist(self):
+        redis_client = FakeRedis()
+        socket = FakeSocket()
+        state = {
+            'players': [],
+            'properties': [],
+            'econ': {},
+            'settings': {},
+            'social': {},
+            'log_buffer': [],
+        }
+        call_counts = {
+            'ensure_regime_economy_state': 0,
+            'ensure_tax_stats': 0,
+            'ensure_lobbying_stats': 0,
+            'record_player_finance_snapshot': 0,
+            'ensure_social_state': 0,
+            'attach_deals_snapshot': 0,
+        }
+
+        def mark(name, result_builder):
+            def wrapper(*args, **kwargs):
+                call_counts[name] += 1
+                return result_builder(*args, **kwargs)
+            return wrapper
+
+        with patch.object(
+            game_loop,
+            'ensure_regime_economy_state',
+            side_effect=mark('ensure_regime_economy_state', lambda econ, _settings: {**econ, 'prepared': True}),
+        ), patch.object(
+            game_loop,
+            'ensure_tax_stats',
+            side_effect=mark('ensure_tax_stats', lambda snapshot: {**snapshot, 'tax_stats': {'prepared': True}}),
+        ), patch.object(
+            game_loop,
+            'ensure_lobbying_stats',
+            side_effect=mark('ensure_lobbying_stats', lambda snapshot: {**snapshot, 'lobbying_stats': {'prepared': True}}),
+        ), patch.object(
+            game_loop,
+            'record_player_finance_snapshot',
+            side_effect=mark('record_player_finance_snapshot', lambda snapshot: {**snapshot, 'player_finance_history': {'last_fingerprint': 'prepared'}}),
+        ), patch.object(
+            game_loop,
+            'ensure_social_state',
+            side_effect=mark('ensure_social_state', lambda snapshot: {**snapshot, 'social': {**snapshot.get('social', {}), 'prepared': True}}),
+        ), patch.object(
+            game_loop,
+            'attach_deals_snapshot',
+            side_effect=mark('attach_deals_snapshot', lambda snapshot, _match_id: {**snapshot, 'deals': []}),
+        ), patch('app.engine.bots.queue_bot_state_evaluation') as queue_bot_state_evaluation:
+            game_loop.persist_game_state(state, 77, redis_client)
+            game_loop.broadcast_game_state_snapshot(socket, 77, state)
+
+        self.assertEqual(call_counts['ensure_regime_economy_state'], 1)
+        self.assertEqual(call_counts['ensure_tax_stats'], 1)
+        self.assertEqual(call_counts['ensure_lobbying_stats'], 1)
+        self.assertEqual(call_counts['record_player_finance_snapshot'], 1)
+        self.assertEqual(call_counts['ensure_social_state'], 1)
+        self.assertEqual(call_counts['attach_deals_snapshot'], 1)
+        self.assertEqual(state.get('_runtime_snapshot_prepared_for_match_id'), 77)
+        emitted_state = socket.emits[0][1]['state']
+        self.assertNotIn('_runtime_snapshot_prepared_for_match_id', emitted_state)
+        persisted_state = json.loads(redis_client.get('game:77:state'))
+        self.assertNotIn('_runtime_snapshot_prepared_for_match_id', persisted_state)
+        queue_bot_state_evaluation.assert_called_once()
 
     def test_turn_timeout_task_logs_and_ends_turn(self):
         redis_client = FakeRedis()

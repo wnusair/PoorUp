@@ -242,6 +242,31 @@ class BotStrategyTests(unittest.TestCase):
         self.assertGreater(summary['private_equity_edge_score'], 0.0)
         self.assertGreater(summary['buildable_property_count'], 0)
 
+    def test_queue_bot_state_evaluation_debounces_duplicate_requests(self):
+        scheduled_tasks = []
+
+        class FakeSocketIO:
+            def start_background_task(self, target, *args):
+                scheduled_tasks.append((target, args))
+
+            def sleep(self, _seconds):
+                return None
+
+        with patch.object(bots, 'socketio', FakeSocketIO()), patch.object(
+            bots,
+            '_queue_bot_state_evaluation',
+        ) as queue_state_evaluation:
+            state = {'status': 'active'}
+            bots.queue_bot_state_evaluation(77, state, reason='snapshot')
+            bots.queue_bot_state_evaluation(77, state, reason='snapshot')
+
+            self.assertEqual(len(scheduled_tasks), 1)
+
+            target, args = scheduled_tasks[0]
+            target(*args)
+
+        queue_state_evaluation.assert_called_once_with(77, None, 'snapshot', replace_existing=True)
+
     def test_property_purchase_buys_monopoly_completion(self):
         player = make_player(1, 'Atlas', 1500)
         other = make_player(2, 'Rival', 1500, is_bot=False)
@@ -550,6 +575,104 @@ class BotStrategyTests(unittest.TestCase):
         self.assertEqual(action['property_id'], 11)
         self.assertEqual(action['supporter_ids'], [1])
 
+    def test_bot_requests_to_join_public_plot_when_under_pressure(self):
+        player = make_player(1, 'Atlas', 220)
+        player.update({
+            'plot_hardship_score': 3,
+            'plot_hardship_trigger_count': 2,
+        })
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        state = make_state([player, rival], [], government_type='social_democracy', round_number=6)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'join_requests': {},
+                'join_invites': {},
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_join')
+        self.assertEqual(action['intent'], 'request')
+
+    def test_plot_commander_accepts_pending_join_request(self):
+        player = make_player(1, 'Atlas', 220)
+        player.update({'plot_role': 'committed_member'})
+        applicant = make_player(2, 'Rival', 400, is_bot=False)
+        state = make_state([player, applicant], [], government_type='social_democracy', round_number=7)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'commander_id': 1,
+                'member_ids': [1],
+                'committed_member_ids': [1],
+                'join_requests': {
+                    '2': {'player_id': 2, 'hardship_score': 2, 'hardship_trigger_count': 1, 'requested_round': 7},
+                },
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_join')
+        self.assertEqual(action['intent'], 'accept_request')
+        self.assertEqual(action['target_player_id'], 2)
+
+    def test_bot_spreads_before_passive_fortify_when_adjacent_expansion_exists(self):
+        player = make_player(1, 'Atlas', 900)
+        player.update({'plot_role': 'committed_member'})
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        state = make_state([player, rival], [], government_type='social_democracy', round_number=7)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'stage': 3,
+                'support': 8.0,
+                'supply': 5.0,
+                'member_ids': [1],
+                'committed_member_ids': [1],
+                'clusters': [
+                    {'cluster_id': 'cluster_1', 'size': 2, 'avg_entrenchment': 2.0, 'reintegration_pressure': 0, 'blockaded': False},
+                ],
+                'legal_targets': [
+                    {'property_id': 24, 'preview_score': 9, 'agitation': 2, 'adjacent_to_control': True},
+                ],
+                'seized_properties': [
+                    {'property_id': 11, 'entrenchment': 1, 'reintegration_progress': 0, 'current_value': 200},
+                ],
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_action')
+        self.assertEqual(action['action_type'], 'attempt_seizure')
+
+    def test_bot_avoids_development_above_plot_founder_cap(self):
+        player = make_player(1, 'Atlas', 900)
+        player.update({
+            'plot_locked_poverty': True,
+            'plot_max_development_level': 3,
+        })
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        properties = [
+            make_property(21, 'Red One', '#EAB308', 220, owner_id=1, board_position=21, dev_level=3),
+            make_property(22, 'Red Two', '#EAB308', 220, owner_id=1, board_position=22, dev_level=3),
+            make_property(23, 'Red Three', '#EAB308', 240, owner_id=1, board_position=23, dev_level=3),
+        ]
+        state = make_state([player, rival], properties, round_number=7)
+
+        target = bots.choose_development_target(player, state, self.profile(state['settings']))
+
+        self.assertIsNone(target)
+
     def test_trade_proposal_targets_monopoly_completion(self):
         player = make_player(1, 'Atlas', 1800)
         rival = make_player(2, 'Rival', 1200, is_bot=False)
@@ -681,12 +804,25 @@ class BotStrategyTests(unittest.TestCase):
         state['dice_rolled_this_turn'] = True
         self.fake_redis.set('game:77:auction:12:active', '1')
 
-        with patch.object(bots, '_schedule_player_task') as schedule_task, patch.object(bots, 'queue_bot_trade_responses') as queue_trade_responses, patch.object(bots, 'queue_bot_auction_reactions') as queue_auction_reactions:
+        scheduled_tasks = []
+
+        class FakeSocketIO:
+            def start_background_task(self, target, *args):
+                scheduled_tasks.append((target, args))
+
+            def sleep(self, _seconds):
+                return None
+
+        with patch.object(bots, 'socketio', FakeSocketIO()), patch.object(bots, 'load_game_state', return_value=state), patch.object(bots, '_schedule_player_task') as schedule_task, patch.object(bots, 'queue_bot_trade_responses') as queue_trade_responses, patch.object(bots, 'queue_bot_auction_reactions') as queue_auction_reactions:
             bots.queue_bot_state_evaluation(77, state, reason='test')
 
+            self.assertEqual(len(scheduled_tasks), 1)
+            target, args = scheduled_tasks[0]
+            target(*args)
+
         schedule_task.assert_not_called()
-        queue_trade_responses.assert_called_once_with(77, replace_existing=True)
-        queue_auction_reactions.assert_called_once_with(77, game_state=state, reason='test', replace_existing=True)
+        queue_trade_responses.assert_called_once_with(77, settings=state['settings'], replace_existing=True)
+        queue_auction_reactions.assert_called_once_with(77, game_state=state, settings=state['settings'], reason='test', replace_existing=True)
 
     def test_recover_bot_state_evaluation_only_schedules_missing_tasks(self):
         bot_player = make_player(1, 'Atlas', 1800)
@@ -700,8 +836,8 @@ class BotStrategyTests(unittest.TestCase):
             bots.recover_bot_state_evaluation(77, state, reason='refresh')
 
         schedule_task.assert_called_once_with(77, 1, 'manage_turn', 'refresh', replace_existing=False)
-        queue_trade_responses.assert_called_once_with(77, replace_existing=False)
-        queue_auction_reactions.assert_called_once_with(77, game_state=state, reason='refresh', replace_existing=False)
+        queue_trade_responses.assert_called_once_with(77, settings=state['settings'], replace_existing=False)
+        queue_auction_reactions.assert_called_once_with(77, game_state=state, settings=state['settings'], reason='refresh', replace_existing=False)
 
     def test_execute_manage_turn_ends_turn_after_repeated_failed_action(self):
         bot_player = make_player(1, 'Atlas', 1800)

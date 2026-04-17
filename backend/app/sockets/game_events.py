@@ -1818,6 +1818,10 @@ def handle_develop_property(data):
 
     player = next((p for p in gs["players"] if p["id"] == mp.id), None)
     new_level = prop.get("dev_level", 0) + 1
+    max_dev_level = player.get("plot_max_development_level") if player else None
+    if player and player.get("plot_locked_poverty") and max_dev_level is not None and int(new_level) > int(max_dev_level):
+        emit("error", {"message": f"Plot founders cannot build beyond level {int(max_dev_level)}."})
+        return
     cost = calculate_development_cost(
         prop.get("base_price"),
         new_level,

@@ -64,6 +64,7 @@ from app.engine.deals import (
     expire_player_clauses,
 )
 from app.engine.debt import (
+    apply_plot_poverty_rescue,
     calculate_player_liquidation_value,
     clear_player_debts,
     credit_player_with_debt_settlement,
@@ -152,6 +153,7 @@ DEFAULT_SETTINGS = {
     "max_rent_discount_percent": 90,
     "max_private_equity_payout_multiple": 1.75,
 }
+RUNTIME_GAME_STATE_KEYS = {"_runtime_snapshot_prepared_for_match_id"}
 
 # Chance cards seed data
 REMOVED_CARD_EFFECT_TYPES = {"get_out_of_jail_free", "go_to_jail"}
@@ -448,18 +450,23 @@ def initialize_game_state(match, match_players, redis_client, socketio_instance)
 
 
 def _write_game_state_to_redis(game_state: dict, match_id: int, redis_client) -> None:
+    transport_state = {
+        key: value
+        for key, value in game_state.items()
+        if key not in RUNTIME_GAME_STATE_KEYS
+    }
     mid = str(match_id)
-    redis_client.set(f"game:{mid}:state", json.dumps(game_state))
-    redis_client.set(f"game:{mid}:current_turn", str(game_state.get("current_player_id", "")))
-    redis_client.set(f"game:{mid}:rage", str(game_state.get("rage", 0.0)))
-    redis_client.set(f"game:{mid}:social", json.dumps(game_state.get("social", {})))
+    redis_client.set(f"game:{mid}:state", json.dumps(transport_state))
+    redis_client.set(f"game:{mid}:current_turn", str(transport_state.get("current_player_id", "")))
+    redis_client.set(f"game:{mid}:rage", str(transport_state.get("rage", 0.0)))
+    redis_client.set(f"game:{mid}:social", json.dumps(transport_state.get("social", {})))
 
-    turn_order = game_state.get("turn_order", [])
+    turn_order = transport_state.get("turn_order", [])
     redis_client.delete(f"game:{mid}:turn_order")
     for pid in turn_order:
         redis_client.rpush(f"game:{mid}:turn_order", pid)
 
-    econ = game_state.get("econ", {})
+    econ = transport_state.get("econ", {})
     redis_client.set(f"game:{mid}:econ", json.dumps(econ))
 
 
@@ -822,14 +829,18 @@ def load_game_state(match_id: int, redis_client) -> dict | None:
     game_state = ensure_social_state(game_state)
     game_state = attach_deals_snapshot(game_state, match_id)
 
+    game_state["_runtime_snapshot_prepared_for_match_id"] = int(match_id)
+
     if board_state_updated:
         _write_game_state_to_redis(game_state, match_id, redis_client)
 
     return game_state
 
 
-def persist_game_state(game_state: dict, match_id: int, redis_client) -> None:
-    """Write game state to Redis. PostgreSQL sync happens via persist_to_db."""
+def _prepare_game_state_snapshot(game_state: dict, match_id: int) -> dict:
+    if int(game_state.get("_runtime_snapshot_prepared_for_match_id") or 0) == int(match_id):
+        return game_state
+
     next_state = dict(game_state)
     next_state["econ"] = ensure_regime_economy_state(next_state.get("econ", {}), next_state.get("settings", {}))
     next_state = ensure_tax_stats(next_state)
@@ -837,24 +848,32 @@ def persist_game_state(game_state: dict, match_id: int, redis_client) -> None:
     next_state = record_player_finance_snapshot(next_state)
     next_state = ensure_social_state(next_state)
     next_state = attach_deals_snapshot(next_state, match_id)
-    game_state.clear()
-    game_state.update(next_state)
+    next_state["_runtime_snapshot_prepared_for_match_id"] = int(match_id)
+    return next_state
+
+
+def persist_game_state(game_state: dict, match_id: int, redis_client) -> None:
+    """Write game state to Redis. PostgreSQL sync happens via persist_to_db."""
+    next_state = _prepare_game_state_snapshot(game_state, match_id)
+    if next_state is not game_state:
+        game_state.clear()
+        game_state.update(next_state)
     _write_game_state_to_redis(game_state, match_id, redis_client)
 
 
 def broadcast_game_state_snapshot(socketio_instance, match_id: int, game_state: dict) -> None:
-    next_state = dict(game_state)
-    next_state["econ"] = ensure_regime_economy_state(next_state.get("econ", {}), next_state.get("settings", {}))
-    next_state = ensure_tax_stats(next_state)
-    next_state = ensure_lobbying_stats(next_state)
-    next_state = record_player_finance_snapshot(next_state)
-    next_state = ensure_social_state(next_state)
-    next_state = attach_deals_snapshot(next_state, match_id)
-    game_state.clear()
-    game_state.update(next_state)
+    next_state = _prepare_game_state_snapshot(game_state, match_id)
+    if next_state is not game_state:
+        game_state.clear()
+        game_state.update(next_state)
+    transport_state = {
+        key: value
+        for key, value in game_state.items()
+        if key not in RUNTIME_GAME_STATE_KEYS
+    }
     socketio_instance.emit(
         "game_state_snapshot",
-        {"state": game_state},
+        {"state": transport_state},
         room=str(match_id),
     )
     from app.engine.bots import queue_bot_state_evaluation
@@ -1811,11 +1830,14 @@ def _attempt_player_bailout(
     socketio_instance,
 ) -> tuple[dict, dict]:
     game_state = dict(game_state)
+    game_state, player, rescue = apply_plot_poverty_rescue(game_state, player_id)
     player = next((entry for entry in game_state.get("players", []) if entry["id"] == player_id), None)
     if player is None or player.get("is_bankrupt", False):
         return game_state, {"bailed_out": False, "bankrupt": False}
 
     if float(player.get("balance", 0) or 0) >= 0 and not has_pending_player_debt(game_state, player_id):
+        if rescue.get("balance_rescue") or rescue.get("debt_rescue"):
+            return game_state, {"bailed_out": False, "bankrupt": False, "savings_rescue": rescue}
         return game_state, {"bailed_out": False, "bankrupt": False}
 
     econ = dict(game_state.get("econ", {}))
@@ -1983,9 +2005,13 @@ def declare_player_bankruptcy(
     socketio_instance,
 ) -> tuple[dict, dict]:
     game_state = dict(game_state)
+    game_state, player, rescue = apply_plot_poverty_rescue(game_state, player_id)
     player = next((entry for entry in game_state.get("players", []) if entry["id"] == player_id), None)
     if player is None:
         return game_state, {"bailed_out": False, "bankrupt": False}
+
+    if float(player.get("balance", 0) or 0) >= 0 and not has_pending_player_debt(game_state, player_id):
+        return game_state, {"bailed_out": False, "bankrupt": False, "savings_rescue": rescue}
 
     game_state, bailout_outcome = _attempt_player_bailout(
         game_state,

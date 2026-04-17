@@ -3,6 +3,8 @@ import { useGameStore } from '../../hooks/useGameState';
 import { LOG_EVENT_COLORS } from '../../utils/constants';
 import { formatTimestamp } from '../../utils/formatters';
 
+const MAX_CENTER_LOG_ENTRIES = 18;
+
 export default function CenterLogDock() {
   const logEntries = useGameStore((state) => state.logEntries);
   const players = useGameStore((state) => state.players);
@@ -14,7 +16,7 @@ export default function CenterLogDock() {
   );
 
   const entries = useMemo(
-    () => (logEntries || []).map((entry) => ({
+    () => (logEntries || []).slice(-MAX_CENTER_LOG_ENTRIES).map((entry) => ({
       ...entry,
       player: entry.player_id ? playerMap[entry.player_id] : null,
     })),

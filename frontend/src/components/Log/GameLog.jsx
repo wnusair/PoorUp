@@ -12,6 +12,7 @@ const EVENT_TYPE_GROUPS = [
 ];
 
 const ALL_TYPES = EVENT_TYPE_GROUPS.flatMap((g) => g.types);
+const MAX_RENDERED_LOG_ENTRIES = 120;
 
 export default function GameLog() {
   const { logEntries, players } = useGameStore();
@@ -26,7 +27,8 @@ export default function GameLog() {
     .map((e) => ({
       ...e,
       _player: e.player_id ? playerMap[e.player_id] : null,
-    }));
+    }))
+    .slice(-MAX_RENDERED_LOG_ENTRIES);
 
   // Auto-scroll to bottom
   useEffect(() => {

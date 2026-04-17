@@ -349,6 +349,9 @@ def develop_property(match_id):
         player = next((p for p in gs["players"] if p["id"] == mp.id), player)
 
     personal_cost = round(max(0.0, cost - float((escrow_result or {}).get("escrow_used", 0) or 0)), 2)
+    max_dev_level = player.get("plot_max_development_level") if player else None
+    if player and player.get("plot_locked_poverty") and max_dev_level is not None and int(target_level) > int(max_dev_level):
+        return jsonify({"error": f"Plot founders cannot build beyond level {int(max_dev_level)}."}), 400
     if float(player["balance"]) < personal_cost:
         return jsonify({"error": "Insufficient funds to develop."}), 400
 

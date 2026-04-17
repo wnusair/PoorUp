@@ -17,6 +17,16 @@ from app.utils.settings import normalize_government_type
 
 COMMUNIST_PLOT_OWNER_ID = "communist_plot"
 COMMUNIST_PLOT_OWNER_NAME = "People's Committees"
+PLOT_FOUNDER_POVERTY_BALANCE_CAP = 150.0
+PLOT_FOUNDER_MAX_DEVELOPMENT_LEVEL = 3
+
+PLOT_ROLE_PRIORITY = {
+    "founder": 5,
+    "cadre": 4,
+    "committed_member": 3,
+    "organizer": 2,
+    "sympathizer": 1,
+}
 
 PLOT_STAGE_NAMES = {
     0: "Eligible Hardship",
@@ -312,6 +322,7 @@ def _plot_defaults() -> dict:
     return {
         "exists": False,
         "founder_id": None,
+        "commander_id": None,
         "public": False,
         "stage": 0,
         "stage_name": PLOT_STAGE_NAMES[0],
@@ -335,10 +346,12 @@ def _plot_defaults() -> dict:
         "recent_backlash_support": 0.0,
         "members": {},
         "join_invites": {},
+        "join_requests": {},
         "regions": {},
         "cooldowns": {},
         "action_history": [],
         "recent_failures": [],
+        "succession_round": None,
         "victory_countdown": {
             "active": False,
             "rounds_held": 0,
@@ -443,6 +456,8 @@ def _coerce_plot_state(value: dict | None, current_round: int) -> dict:
     plot["last_aggression_round"] = int(plot.get("last_aggression_round", 0) or 0)
     plot["last_successful_action_round"] = int(plot.get("last_successful_action_round", 0) or 0)
     plot["last_stockpile_round"] = int(plot.get("last_stockpile_round", 0) or 0)
+    plot["commander_id"] = int(plot.get("commander_id") or 0) or None
+    plot["succession_round"] = int(plot.get("succession_round") or 0) or None
 
     victory = dict(_plot_defaults()["victory_countdown"])
     victory.update(dict(plot.get("victory_countdown") or {}))
@@ -460,6 +475,11 @@ def _coerce_plot_state(value: dict | None, current_round: int) -> dict:
     plot["join_invites"] = {
         str(int(player_id)): dict(invite or {})
         for player_id, invite in (plot.get("join_invites") or {}).items()
+        if str(player_id).isdigit()
+    }
+    plot["join_requests"] = {
+        str(int(player_id)): dict(request or {})
+        for player_id, request in (plot.get("join_requests") or {}).items()
         if str(player_id).isdigit()
     }
     plot["regions"] = {
@@ -500,6 +520,10 @@ def _ensure_plot_contract(game_state: dict) -> dict:
         next_player.setdefault("plot_bottom_half_streak", 0)
         next_player.setdefault("plot_last_hardship_round", 0)
         next_player.setdefault("plot_last_counter_commit_round", 0)
+        next_player.setdefault("plot_locked_poverty", False)
+        next_player.setdefault("plot_poverty_balance_cap", 0.0)
+        next_player.setdefault("plot_savings_balance", 0.0)
+        next_player.setdefault("plot_max_development_level", None)
         updated_players.append(next_player)
     next_state["players"] = updated_players
     return next_state
@@ -604,6 +628,280 @@ def _cadre_ids(plot: dict, player_lookup: dict[int, dict]) -> list[int]:
         if member.get("role") == "cadre":
             cadre_ids.append(player_id)
     return cadre_ids
+
+
+def _member_contribution_score(member: dict) -> float:
+    return _round(
+        float(member.get("cash_contributed", 0) or 0)
+        + (float(member.get("support_contributed", 0) or 0) * 100.0)
+        + (float(member.get("supply_contributed", 0) or 0) * 120.0)
+        + (float(member.get("successful_actions_supported", 0) or 0) * 80.0),
+        2,
+    )
+
+
+def _next_plot_role(role: str | None) -> str | None:
+    normalized_role = str(role or "")
+    if normalized_role == "sympathizer":
+        return "organizer"
+    if normalized_role in {"founder", "organizer"}:
+        return "committed_member"
+    if normalized_role == "committed_member":
+        return "cadre"
+    return None
+
+
+def _promotion_progress(member: dict, current_round: int) -> dict:
+    role = str(member.get("role") or "")
+    contribution_round_count = len(member.get("contribution_rounds") or [])
+    required_contribution_rounds = max(1, int(member.get("required_contribution_rounds", 2) or 2))
+    successful_actions_supported = max(0, int(member.get("successful_actions_supported", 0) or 0))
+    required_successful_actions = max(1, int(member.get("required_successful_actions", 1) or 1))
+    joined_round = int(member.get("joined_round", current_round) or current_round)
+    ready_for_commitment = current_round > joined_round
+    founder_can_commit = bool(member.get("is_founder")) and ready_for_commitment and successful_actions_supported >= 1
+
+    if role == "sympathizer":
+        promotion_ready = contribution_round_count >= required_contribution_rounds
+    elif role in {"founder", "organizer"}:
+        promotion_ready = (
+            (ready_for_commitment and contribution_round_count >= required_contribution_rounds and successful_actions_supported >= required_successful_actions)
+            or founder_can_commit
+        )
+    elif role == "committed_member":
+        promotion_ready = successful_actions_supported >= max(3, required_successful_actions + 1)
+    else:
+        promotion_ready = False
+
+    return {
+        "next_role": _next_plot_role(role),
+        "contribution_round_count": contribution_round_count,
+        "required_contribution_rounds": required_contribution_rounds,
+        "successful_actions_supported": successful_actions_supported,
+        "required_successful_actions": required_successful_actions,
+        "promotion_ready": bool(promotion_ready),
+    }
+
+
+def _stage_requirement(label: str, met: bool) -> dict:
+    return {
+        "label": label,
+        "met": bool(met),
+    }
+
+
+def _build_next_stage_summary(
+    plot: dict,
+    *,
+    current_round: int,
+    total_seeded_cells: int,
+    committed_ids: list[int],
+    legal_targets: list[dict],
+    seized_ids: list[int],
+    seized_regions: set[str],
+    control_percent: float,
+    entrenched_clusters: list[str],
+    victory: dict,
+) -> dict | None:
+    current_stage = int(plot.get("stage", 0) or 0)
+    if current_stage >= 5:
+        return None
+
+    next_stage = current_stage + 1
+    requirements: list[dict] = []
+
+    if current_stage <= 1:
+        requirements = [
+            _stage_requirement(f"Round {current_round}/5", current_round >= 5),
+            _stage_requirement(f"Support generated {float(plot.get('support_generated_total', 0) or 0):.0f}/12", float(plot.get("support_generated_total", 0) or 0) >= 12),
+            _stage_requirement(f"Seeded cells {total_seeded_cells}/2", total_seeded_cells >= 2),
+            _stage_requirement(f"Heat {float(plot.get('heat', 0) or 0):.0f}/under 60", float(plot.get("heat", 0) or 0) < 60),
+        ]
+    elif current_stage == 2:
+        requirements = [
+            _stage_requirement(f"Round {current_round}/6", current_round >= 6),
+            _stage_requirement(f"Committed members {len(committed_ids)}/1", bool(committed_ids)),
+            _stage_requirement(f"Support {float(plot.get('support', 0) or 0):.0f}/6", float(plot.get("support", 0) or 0) >= 6),
+            _stage_requirement(f"Supply {float(plot.get('supply', 0) or 0):.0f}/4", float(plot.get("supply", 0) or 0) >= 4),
+            _stage_requirement(f"Legal seizure targets {len(legal_targets)}/1", bool(legal_targets)),
+        ]
+    elif current_stage == 3:
+        requirements = [
+            _stage_requirement(f"Round {current_round}/7", current_round >= 7),
+            _stage_requirement(f"Control {control_percent:.1f}%/18% or seized properties {len(seized_ids)}/4", control_percent >= 18.0 or len(seized_ids) >= 4),
+            _stage_requirement(f"Entrenched clusters {len(entrenched_clusters)}/1", bool(entrenched_clusters)),
+            _stage_requirement(f"Support {float(plot.get('support', 0) or 0):.0f}/over 12", float(plot.get("support", 0) or 0) > 12),
+        ]
+    else:
+        control_goal_met = control_percent >= 30.0 or (len(seized_ids) >= 8 and len(seized_regions) >= 2)
+        requirements = [
+            _stage_requirement(
+                f"Victory countdown {int(victory.get('rounds_held', 0) or 0)}/{int(victory.get('required_rounds', 2) or 2)}",
+                bool(victory.get("completed")),
+            ),
+            _stage_requirement(f"Round {current_round}/9", current_round >= 9),
+            _stage_requirement(f"Committed members {len(committed_ids)}/1", bool(committed_ids)),
+            _stage_requirement(f"Entrenched clusters {len(entrenched_clusters)}/2", len(entrenched_clusters) >= 2),
+            _stage_requirement(f"Heat {float(plot.get('heat', 0) or 0):.0f}/under 85", float(plot.get("heat", 0) or 0) < 85),
+            _stage_requirement("Wait at least one round after the first seizure.", int(plot.get("first_seizure_round", 0) or 0) != current_round),
+            _stage_requirement(
+                f"Control {control_percent:.1f}%/30% or seized properties {len(seized_ids)}/8 across regions {len(seized_regions)}/2",
+                control_goal_met,
+            ),
+        ]
+
+    return {
+        "stage": next_stage,
+        "stage_name": PLOT_STAGE_NAMES.get(next_stage, PLOT_STAGE_NAMES[5]),
+        "all_met": all(entry.get("met") for entry in requirements),
+        "requirements": requirements,
+    }
+
+
+def _command_chain_entries(plot: dict, game_state: dict) -> list[dict]:
+    player_lookup = _player_index(game_state)
+    current_round = _game_round(game_state)
+    entries = []
+    for player_id in _active_member_ids(plot, player_lookup):
+        member = dict((plot.get("members") or {}).get(str(player_id)) or {})
+        player = player_lookup.get(player_id) or {}
+        entries.append(
+            {
+                "player_id": player_id,
+                "username": player.get("username", f"Player {player_id}"),
+                "role": member.get("role"),
+                "is_founder": bool(member.get("is_founder", False)),
+                "joined_round": int(member.get("joined_round", 0) or 0),
+                "contribution_score": _member_contribution_score(member),
+                **_promotion_progress(member, current_round),
+            }
+        )
+    return sorted(
+        entries,
+        key=lambda entry: (
+            -int(PLOT_ROLE_PRIORITY.get(str(entry.get("role") or ""), 0)),
+            -float(entry.get("contribution_score", 0) or 0),
+            int(entry.get("joined_round", 0) or 0),
+            int(entry.get("player_id", 0) or 0),
+        ),
+    )
+
+
+def _sync_plot_command(plot: dict, game_state: dict, current_round: int) -> dict:
+    updated_plot = dict(plot)
+    command_chain = _command_chain_entries(updated_plot, game_state)
+    prior_commander_id = int(updated_plot.get("commander_id") or 0) or None
+    commander_id = int(command_chain[0]["player_id"]) if command_chain else None
+    updated_plot["commander_id"] = commander_id
+    if (
+        updated_plot.get("exists")
+        and prior_commander_id is not None
+        and commander_id is not None
+        and prior_commander_id != commander_id
+    ):
+        updated_plot["succession_round"] = current_round
+        successor = next((entry for entry in command_chain if int(entry.get("player_id") or 0) == commander_id), None) or {}
+        updated_plot = _append_history(
+            updated_plot,
+            action_type="plot_succession",
+            player_id=commander_id,
+            current_round=current_round,
+            success=True,
+            summary=f"{successor.get('username', 'A plot member')} assumed command of the communist plot.",
+        )
+    elif updated_plot.get("exists") and prior_commander_id is None and commander_id is not None:
+        updated_plot["succession_round"] = updated_plot.get("succession_round") or current_round
+    return updated_plot
+
+
+def _require_plot_membership_manager(plot: dict, player_id: int) -> None:
+    commander_id = int(plot.get("commander_id") or 0) or None
+    if commander_id != int(player_id):
+        raise ValueError("Only the current plot commander can manage invitations, requests, and promotions.")
+
+
+def _plot_join_entry_cost(player: dict) -> tuple[bool, float]:
+    prosperous_entry = int(player.get("plot_hardship_trigger_count", 0) or 0) < 2
+    return prosperous_entry, 150.0 if prosperous_entry else 0.0
+
+
+def _lock_plot_founder_poverty(game_state: dict, player_id: int) -> dict:
+    player = _player_index(game_state).get(int(player_id))
+    if player is None:
+        return game_state
+    current_balance = float(player.get("balance", 0) or 0)
+    balance_cap = PLOT_FOUNDER_POVERTY_BALANCE_CAP
+    savings_balance = _round(float(player.get("plot_savings_balance", 0) or 0) + max(0.0, current_balance - balance_cap), 2)
+    return _replace_player(
+        game_state,
+        player_id,
+        {
+            "balance": _round(min(current_balance, balance_cap), 2),
+            "plot_locked_poverty": True,
+            "plot_poverty_balance_cap": balance_cap,
+            "plot_savings_balance": savings_balance,
+            "plot_max_development_level": PLOT_FOUNDER_MAX_DEVELOPMENT_LEVEL,
+        },
+    )
+
+
+def _admit_plot_member(next_state: dict, plot: dict, *, player_id: int, current_round: int, source: str) -> tuple[dict, dict, dict]:
+    player_lookup = _player_index(next_state)
+    player = player_lookup.get(int(player_id))
+    if player is None or player.get("is_bankrupt"):
+        raise ValueError("That player cannot join the communist plot.")
+    if (plot.get("members") or {}).get(str(player_id)):
+        raise ValueError("That player is already aligned with the plot.")
+
+    prosperous_entry, entry_cost = _plot_join_entry_cost(player)
+    if entry_cost > 0:
+        if float(player.get("balance", 0) or 0) < entry_cost:
+            raise ValueError("Prosperous players must pay a higher political cost to join, and this player cannot afford it.")
+        next_state, _ = spend_player_balance(next_state, player_id, entry_cost)
+        player = _player_index(next_state).get(player_id) or player
+
+    new_member = _member_defaults(player_id, current_round)
+    new_member["prosperous_entry"] = prosperous_entry
+    new_member["required_contribution_rounds"] = 4 if prosperous_entry else 2
+    new_member["required_successful_actions"] = 2 if prosperous_entry else 1
+    new_member["cash_contributed"] = entry_cost
+    new_member["contribution_rounds"] = [current_round]
+    members = {str(key): dict(value) for key, value in (plot.get("members") or {}).items()}
+    members[str(player_id)] = new_member
+    updated_plot = dict(plot)
+    updated_plot["members"] = members
+
+    invites = dict(updated_plot.get("join_invites") or {})
+    invites.pop(str(player_id), None)
+    updated_plot["join_invites"] = invites
+    requests = dict(updated_plot.get("join_requests") or {})
+    requests.pop(str(player_id), None)
+    updated_plot["join_requests"] = requests
+    updated_plot = _add_support(updated_plot, 2)
+    updated_plot["last_recruitment_round"] = current_round
+    updated_plot = _append_history(
+        updated_plot,
+        action_type="plot_join",
+        player_id=player_id,
+        current_round=current_round,
+        success=True,
+        summary=f"{player.get('username', 'Player')} joined the plot as a sympathizer via {source}.",
+    )
+    return next_state, updated_plot, player
+
+
+def _eligible_coalition_cosponsors(game_state: dict, coalition_member_ids: set[int], current_round: int, acting_player_id: int) -> list[int]:
+    eligible = []
+    for coalition_member_id in sorted(coalition_member_ids):
+        if coalition_member_id == int(acting_player_id):
+            continue
+        player = _player_index(game_state).get(coalition_member_id) or {}
+        if not player or player.get("is_bankrupt"):
+            continue
+        if int(player.get("plot_last_counter_commit_round", 0) or 0) >= current_round:
+            continue
+        eligible.append(coalition_member_id)
+    return eligible
 
 
 def _coalition_member_ids(plot: dict, player_lookup: dict[int, dict]) -> list[int]:
@@ -1176,6 +1474,7 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
     social = dict(next_state.get("social") or {})
     plot = _coerce_plot_state((social.get("plot") or {}), current_round)
     plot = _sync_member_promotions(plot, next_state)
+    plot = _sync_plot_command(plot, next_state, current_round)
 
     net_worth_by_player = {
         int(player.get("id") or 0): float(calculate_net_worth(player, next_state) or 0)
@@ -1340,6 +1639,8 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
 
     eligible_players = []
     member_ids = _active_member_ids(plot, _player_index(next_state))
+    command_chain = _command_chain_entries(plot, next_state)
+    commander_id = int(plot.get("commander_id") or 0) or None
     for player in next_state.get("players", []):
         player_id = int(player.get("id") or 0)
         hardship = hardship_by_player.get(player_id, {})
@@ -1355,9 +1656,12 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
                 "hardship_reasons": list(hardship.get("reasons", [])),
                 "hardship_triggers": list(hardship.get("triggers", [])),
                 "invited": str(player_id) in (plot.get("join_invites") or {}),
+                "requested_to_join": str(player_id) in (plot.get("join_requests") or {}),
                 "coalition_member": player_id in coalition_ids,
                 "wealthiest": player_id == wealthiest_player_id,
                 "recruitable": plot.get("exists") and player_id not in member_ids and not player.get("is_bankrupt", False),
+                "can_request_join": plot.get("exists") and player_id not in member_ids and not player.get("is_bankrupt", False) and int(player.get("plot_defection_cooldown_until", 0) or 0) < current_round,
+                "is_commander": commander_id == player_id,
             }
         )
 
@@ -1392,9 +1696,23 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
     if float(plot.get("heat", 0) or 0) >= 85:
         victory["blocked_reason"] = "Heat is too high to start the victory countdown."
 
+    next_stage_summary = _build_next_stage_summary(
+        plot,
+        current_round=current_round,
+        total_seeded_cells=total_seeded_cells,
+        committed_ids=committed_ids,
+        legal_targets=legal_targets,
+        seized_ids=seized_ids,
+        seized_regions=seized_regions,
+        control_percent=control_percent,
+        entrenched_clusters=entrenched_clusters,
+        victory=victory,
+    )
+
     plot_snapshot = {
         **plot,
         "stage_name": PLOT_STAGE_NAMES.get(int(plot.get("stage", 0) or 0), PLOT_STAGE_NAMES[0]),
+        "next_stage": next_stage_summary,
         "member_ids": member_ids,
         "committed_member_ids": committed_ids,
         "cadre_ids": cadre_ids,
@@ -1402,6 +1720,17 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
         "eligible_players": eligible_players,
         "recruitable_players": [entry for entry in eligible_players if entry.get("recruitable")],
         "join_invites": {str(key): dict(value) for key, value in (plot.get("join_invites") or {}).items()},
+        "join_requests": {str(key): dict(value) for key, value in (plot.get("join_requests") or {}).items()},
+        "commander": next((entry for entry in command_chain if int(entry.get("player_id") or 0) == commander_id), None),
+        "command_chain": [
+            {
+                **entry,
+                "is_commander": int(entry.get("player_id") or 0) == int(commander_id or 0),
+                "can_manage_membership": int(entry.get("player_id") or 0) == int(commander_id or 0),
+                "can_issue_orders": PLOT_ROLE_PRIORITY.get(str(entry.get("role") or ""), 0) >= PLOT_ROLE_PRIORITY["organizer"],
+            }
+            for entry in command_chain
+        ],
         "seized_property_ids": seized_ids,
         "seized_properties": seized_properties,
         "seized_region_names": seized_regions,
@@ -1601,6 +1930,7 @@ def seed_debug_communist_plot_state(game_state: dict, *, revolutionary_player_id
             next_player["balance"] = max(float(next_player.get("balance", 0) or 0), founder_balance + 500.0)
         updated_players.append(next_player)
     next_state["players"] = updated_players
+    next_state = _lock_plot_founder_poverty(next_state, revolutionary_player_id)
 
     next_state = _apply_plot_updates(next_state, plot, social_properties, property_updates=property_updates)
     refreshed_plot = _get_plot(next_state)
@@ -1674,6 +2004,7 @@ def start_communist_plot(game_state: dict, *, player_id: int) -> tuple[dict, dic
         {
             "exists": True,
             "founder_id": player_id,
+            "commander_id": player_id,
             "stage": 1,
             "stage_name": PLOT_STAGE_NAMES[1],
             "created_round": current_round,
@@ -1683,6 +2014,7 @@ def start_communist_plot(game_state: dict, *, player_id: int) -> tuple[dict, dic
             "supply": 0.0,
             "members": {str(player_id): member},
             "join_invites": {},
+            "join_requests": {},
             "cooldowns": {},
             "regions": {},
             "public": False,
@@ -1703,6 +2035,7 @@ def start_communist_plot(game_state: dict, *, player_id: int) -> tuple[dict, dic
         summary=f"{player.get('username', 'Player')} founded the communist plot underground.",
     )
 
+    next_state = _lock_plot_founder_poverty(next_state, player_id)
     next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
     next_state = _refresh_state(next_state)
     refreshed_plot = _get_plot(next_state)
@@ -1752,6 +2085,8 @@ def submit_plot_action(game_state: dict, *, player_id: int, action_type: str, pa
         raise ValueError("That plot action has not unlocked yet.")
     if member.get("role") == "sympathizer":
         raise ValueError("Sympathizers must organize further before taking direct actions.")
+    if action_type in {"recruit_sympathizer", "recruit_publicly", "convert_to_organizer"}:
+        _require_plot_membership_manager(plot, player_id)
 
     social_properties = _social_properties(next_state)
     properties_by_id = _property_index(next_state)
@@ -1834,20 +2169,23 @@ def submit_plot_action(game_state: dict, *, player_id: int, action_type: str, pa
             raise ValueError("That player cannot be recruited.")
         if str(target_player_id) in (plot.get("members") or {}):
             raise ValueError("That player is already aligned with the plot.")
-        if action_type == "recruit_publicly":
-            plot = _add_heat(plot, 8)
-        if int(plot.get("recruitment_slowdown_until_round", 0) or 0) >= current_round:
-            plot = _add_support(plot, -1)
-        invites = dict(plot.get("join_invites") or {})
-        invites[str(target_player_id)] = {
-            "player_id": target_player_id,
-            "invited_by": player_id,
-            "round": current_round,
-            "public": action_type == "recruit_publicly" or bool(plot.get("public")),
-        }
-        plot["join_invites"] = invites
-        plot["last_recruitment_round"] = current_round
-        summary = f"{target_player.get('username', 'A player')} is now a recruitment target for the communist plot."
+        if str(target_player_id) in (plot.get("join_requests") or {}):
+            summary = f"{target_player.get('username', 'A player')} is already asking to join the communist plot."
+        else:
+            if action_type == "recruit_publicly":
+                plot = _add_heat(plot, 8)
+            if int(plot.get("recruitment_slowdown_until_round", 0) or 0) >= current_round:
+                plot = _add_support(plot, -1)
+            invites = dict(plot.get("join_invites") or {})
+            invites[str(target_player_id)] = {
+                "player_id": target_player_id,
+                "invited_by": player_id,
+                "round": current_round,
+                "public": action_type == "recruit_publicly" or bool(plot.get("public")),
+            }
+            plot["join_invites"] = invites
+            plot["last_recruitment_round"] = current_round
+            summary = f"{target_player.get('username', 'A player')} is now a recruitment target for the communist plot."
     elif action_type == "convert_to_organizer":
         if target_player_id is None:
             raise ValueError("Select a sympathizer to convert.")
@@ -2077,9 +2415,10 @@ def submit_plot_join(game_state: dict, *, player_id: int, payload: dict | None =
     intent = str(payload.get("intent") or "accept").strip().lower()
     member = dict((plot.get("members") or {}).get(str(player_id)) or {})
     hardship_score = int(player.get("plot_hardship_score", 0) or 0)
-    hardship_trigger_count = int(player.get("plot_hardship_trigger_count", 0) or 0)
     invites = dict(plot.get("join_invites") or {})
     invite = dict(invites.get(str(player_id)) or {})
+    requests = dict(plot.get("join_requests") or {})
+    request = dict(requests.get(str(player_id)) or {})
 
     if intent == "decline":
         if str(player_id) in invites:
@@ -2094,47 +2433,105 @@ def submit_plot_join(game_state: dict, *, player_id: int, payload: dict | None =
             "plot": _get_plot(next_state),
         }
 
-    if intent == "accept":
-        if not invite and not plot.get("public"):
-            raise ValueError("That player has not been invited into the plot.")
+    if intent == "withdraw_request":
+        if str(player_id) not in requests:
+            raise ValueError("That player has not requested to join the plot.")
+        requests.pop(str(player_id), None)
+        plot["join_requests"] = requests
+        next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
+        next_state = _refresh_state(next_state)
+        return next_state, {
+            "action_type": "plot_join",
+            "success": True,
+            "summary": f"{player.get('username', 'Player')} withdrew their request to join the plot.",
+            "plot": _get_plot(next_state),
+        }
+
+    if intent == "request":
         if member:
             raise ValueError("That player is already aligned with the plot.")
-        prosperous_entry = hardship_trigger_count < 2
-        entry_cost = 150.0 if prosperous_entry else 0.0
-        if entry_cost > 0:
-            if float(player.get("balance", 0) or 0) < entry_cost:
-                raise ValueError("Prosperous players must pay a higher political cost to join, and this player cannot afford it.")
-            next_state, _ = spend_player_balance(next_state, player_id, entry_cost)
-            player_lookup = _player_index(next_state)
-            player = player_lookup.get(player_id) or player
-        new_member = _member_defaults(player_id, current_round)
-        new_member["prosperous_entry"] = prosperous_entry
-        new_member["required_contribution_rounds"] = 4 if prosperous_entry else 2
-        new_member["required_successful_actions"] = 2 if prosperous_entry else 1
-        new_member["cash_contributed"] = entry_cost
-        new_member["contribution_rounds"] = [current_round]
-        members = {str(key): dict(value) for key, value in (plot.get("members") or {}).items()}
-        members[str(player_id)] = new_member
-        plot["members"] = members
+        if int(player.get("plot_defection_cooldown_until", 0) or 0) >= current_round:
+            raise ValueError("That player must wait longer before rejoining the plot.")
         if str(player_id) in invites:
-            invites.pop(str(player_id), None)
-            plot["join_invites"] = invites
-        plot = _add_support(plot, 2)
-        plot["last_recruitment_round"] = current_round
+            raise ValueError("That player has already been invited to the plot and can respond directly.")
+        if str(player_id) in requests:
+            raise ValueError("That player already has a pending request to join the plot.")
+        requests[str(player_id)] = {
+            "player_id": player_id,
+            "requested_round": current_round,
+            "hardship_score": hardship_score,
+            "hardship_trigger_count": int(player.get("plot_hardship_trigger_count", 0) or 0),
+        }
+        plot["join_requests"] = requests
         plot = _append_history(
             plot,
-            action_type="plot_join",
+            action_type="plot_join_request",
             player_id=player_id,
             current_round=current_round,
             success=True,
-            summary=f"{player.get('username', 'Player')} joined the plot as a sympathizer.",
+            summary=f"{player.get('username', 'Player')} requested admission to the communist plot.",
         )
+        next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
+        next_state = _refresh_state(next_state)
+        return next_state, {
+            "action_type": "plot_join_request",
+            "success": True,
+            "summary": f"{player.get('username', 'Player')} requested to join the communist plot.",
+            "plot": _get_plot(next_state),
+        }
+
+    if intent == "accept":
+        if not invite:
+            raise ValueError("That player has not been invited into the plot.")
+        next_state, plot, player = _admit_plot_member(next_state, plot, player_id=player_id, current_round=current_round, source="an invitation")
         next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
         next_state = _refresh_state(next_state)
         return next_state, {
             "action_type": "plot_join",
             "success": True,
             "summary": f"{player.get('username', 'Player')} joined the communist plot.",
+            "plot": _get_plot(next_state),
+        }
+
+    if intent == "accept_request":
+        _require_plot_member(plot, player_id)
+        _require_plot_membership_manager(plot, player_id)
+        target_player_id = int(payload.get("target_player_id") or payload.get("player_id") or 0)
+        if target_player_id <= 0 or str(target_player_id) not in requests:
+            raise ValueError("That player does not have a pending request to join the plot.")
+        next_state, plot, target_player = _admit_plot_member(next_state, plot, player_id=target_player_id, current_round=current_round, source="leadership approval")
+        next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
+        next_state = _refresh_state(next_state)
+        return next_state, {
+            "action_type": "plot_join_request",
+            "success": True,
+            "summary": f"{target_player.get('username', 'Player')} was accepted into the communist plot.",
+            "plot": _get_plot(next_state),
+        }
+
+    if intent == "decline_request":
+        _require_plot_member(plot, player_id)
+        _require_plot_membership_manager(plot, player_id)
+        target_player_id = int(payload.get("target_player_id") or payload.get("player_id") or 0)
+        if target_player_id <= 0 or str(target_player_id) not in requests:
+            raise ValueError("That player does not have a pending request to join the plot.")
+        target_player = _player_index(next_state).get(target_player_id) or {}
+        requests.pop(str(target_player_id), None)
+        plot["join_requests"] = requests
+        plot = _append_history(
+            plot,
+            action_type="plot_join_request_declined",
+            player_id=player_id,
+            current_round=current_round,
+            success=True,
+            summary=f"{target_player.get('username', 'A player')} had their request to join the plot declined.",
+        )
+        next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
+        next_state = _refresh_state(next_state)
+        return next_state, {
+            "action_type": "plot_join_request_declined",
+            "success": True,
+            "summary": f"{target_player.get('username', 'A player')} was declined by the communist plot.",
             "plot": _get_plot(next_state),
         }
 
@@ -2342,6 +2739,11 @@ def submit_plot_counter_action(game_state: dict, *, player_id: int, action_type:
     if player_id not in coalition_member_ids:
         raise ValueError("Only coalition members may use public counter-actions.")
 
+    required_supporters = int(action_def.get("supporters_required", 0) or 0)
+    if action_type == "reintegration_campaign" and required_supporters > 0:
+        if not _eligible_coalition_cosponsors(next_state, coalition_member_ids, current_round, player_id):
+            required_supporters = 0
+
     next_state, used_contributions = _deduct_cash_contributions(
         next_state,
         contributors=list(payload.get("contributors") or []),
@@ -2354,7 +2756,7 @@ def submit_plot_counter_action(game_state: dict, *, player_id: int, action_type:
         supporter_ids,
         coalition_member_ids,
         current_round,
-        int(action_def.get("supporters_required", 0) or 0),
+        required_supporters,
     )
     plot = _coerce_plot_state(_get_plot(next_state), current_round)
     social_properties = _social_properties(next_state)
@@ -2430,12 +2832,14 @@ def submit_plot_counter_action(game_state: dict, *, player_id: int, action_type:
         entry = dict(social_properties.get(str(prop.get("id"))) or {})
         if not entry.get("plot_seized"):
             raise ValueError("Only seized properties can be targeted for reintegration.")
+        entrenchment = int(entry.get("plot_entrenchment", 0) or 0)
+        progress_gain = max(18, 42 - (entrenchment * 8))
         entry["plot_reintegration_pushes"] = int(entry.get("plot_reintegration_pushes", 0) or 0) + 1
-        entry["plot_reintegration_progress"] = min(100, int(entry.get("plot_reintegration_progress", 0) or 0) + 50)
+        entry["plot_reintegration_progress"] = min(100, int(entry.get("plot_reintegration_progress", 0) or 0) + progress_gain)
         social_properties[str(prop.get("id"))] = entry
         if backlash_pressure > 0:
             plot = _add_support(plot, min(3, backlash_pressure))
-        if int(entry.get("plot_reintegration_pushes", 0) or 0) >= 2 or int(entry.get("plot_reintegration_progress", 0) or 0) >= 100:
+        if int(entry.get("plot_reintegration_progress", 0) or 0) >= 100:
             restored_owner = entry.get("plot_former_owner_id")
             property_updates[int(prop.get("id") or 0)] = {"owner_id": restored_owner if restored_owner in _player_index(next_state) else None}
             for key in list(entry.keys()):

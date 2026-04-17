@@ -243,7 +243,7 @@ function ClauseBuilder({ clause, index, myPlayerId, counterpartyId, players, pro
             <label className="block text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">
               <span className="inline-flex items-center gap-1">
                 <span>Cash up front</span>
-                <HelpTooltip content="How much money the lender pays now so the other player can build." label="Cash up front help" />
+                <HelpTooltip content="Money the lender pays now for the other player to spend on upgrades." label="Cash up front help" />
               </span>
             </label>
             <input
@@ -259,7 +259,7 @@ function ClauseBuilder({ clause, index, myPlayerId, counterpartyId, players, pro
             <label className="block text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">
               <span className="inline-flex items-center gap-1">
                 <span>Rent share</span>
-                <HelpTooltip content="The part of the rent from the funded upgrades that goes back to the lender until the payback cap is reached." label="Rent share help" />
+                <HelpTooltip content="The share of rent from the funded upgrades that goes back to the lender until the cap is reached." label="Rent share help" />
               </span>
             </label>
             <input
@@ -276,7 +276,7 @@ function ClauseBuilder({ clause, index, myPlayerId, counterpartyId, players, pro
             <label className="block text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">
               <span className="inline-flex items-center gap-1">
                 <span>Payback cap</span>
-                <HelpTooltip content="The most the lender can get back from this build loan before it ends." label="Payback cap help" />
+                <HelpTooltip content="The maximum total amount the lender can get back before this build loan ends." label="Payback cap help" />
               </span>
             </label>
             <input
@@ -736,28 +736,28 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
                     <p className="font-semibold uppercase tracking-[0.18em] text-cyan-300">This Round's Cash Rules</p>
                     <HelpTooltip
                       label="Cash rules help"
-                      content={`Investor Mood is the market's confidence level. Cash Bonus pays on money you keep above ${formatMoney(capitalYieldReserveFloor)}. Build Loan Bonus raises how much a build loan can pay back.${activePlayerCount === 2 ? ` A 1v1 bonus is also active, adding another ${headsUpBuildLoanBonusPercent.toFixed(0)}% because you are funding your only rival.` : ''}`}
+                      content={`Investor Mood changes cash bonuses and build loan returns. Cash Bonus pays on money you keep above ${formatMoney(capitalYieldReserveFloor)}. Build Loan Bonus raises the payback cap on build loans.${activePlayerCount === 2 ? ` A 1v1 bonus is also active, adding another ${headsUpBuildLoanBonusPercent.toFixed(0)}% because you are funding your only rival.` : ''}`}
                     />
                   </div>
                   <div className="mt-3 space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <span className="inline-flex items-center gap-1 text-cyan-100/80">
                         <span>Investor Mood</span>
-                        <HelpTooltip content="Higher mood means the liberal-democracy market is friendlier to cash-heavy play." label="Investor Mood help" />
+                        <HelpTooltip content="Higher Investor Mood increases cash bonuses and build loan payback caps." label="Investor Mood help" />
                       </span>
                       <span className="font-mono text-cyan-50">{marketConfidence.toFixed(1)}/100</span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className="inline-flex items-center gap-1 text-cyan-100/80">
                         <span>Cash Bonus</span>
-                        <HelpTooltip content={`At round end, money you kept above ${formatMoney(capitalYieldReserveFloor)} earns this bonus.`} label="Cash Bonus help" />
+                        <HelpTooltip content={`At round end, cash kept above ${formatMoney(capitalYieldReserveFloor)} earns this bonus.`} label="Cash Bonus help" />
                       </span>
                       <span className="font-mono text-cyan-50">{(capitalYieldRate * 100).toFixed(2)}%</span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className="inline-flex items-center gap-1 text-cyan-100/80">
                         <span>Build Loan Bonus</span>
-                        <HelpTooltip content="This raises the most a build loan can pay back in this round's market." label="Build Loan Bonus help" />
+                        <HelpTooltip content="This increases the maximum total payback on build loans this round." label="Build Loan Bonus help" />
                       </span>
                       <span className="font-mono text-cyan-50">+{buildLoanBonusPercent.toFixed(0)}%</span>
                     </div>
@@ -772,7 +772,7 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
                 <div className="rounded-xl border border-emerald-900/60 bg-emerald-950/20 px-3 py-3 text-xs text-emerald-100">
                   <div className="flex items-center gap-2">
                     <p className="font-semibold uppercase tracking-[0.18em] text-emerald-300">Max Payback Right Now</p>
-                    <HelpTooltip content="This is the most the lender can get back from each build loan if you accepted it under the current bonuses." label="Max payback help" />
+                    <HelpTooltip content="This is the most the lender can get back from each build loan under the current bonuses." label="Max payback help" />
                   </div>
                   <div className="mt-2 space-y-1">
                     {clauses.map((clause, index) => (

@@ -107,6 +107,10 @@
   .modal-panel--wide {
     @apply max-w-3xl;
   }
+
+  .modal-panel--plot {
+    @apply max-w-7xl p-8;
+  }
 }
 
 /* ------------------------------------------------------------------ */

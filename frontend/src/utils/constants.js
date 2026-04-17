@@ -83,23 +83,23 @@ export const LOG_EVENT_COLORS = {
 export const GOVERNMENT_TYPES = {
   minarchism: {
     label: "Minarchism",
-    description: "Minimal government. No lobbying, no welfare. Low taxes.",
+    description: "Minimal government with no lobbying, no welfare, and low taxes.",
   },
   liberal_democracy: {
     label: "Liberal Democracy",
-    description: "Cash-heavy mode. Saving extra money earns a bonus, build loans pay better, and pushing growth too hard can cause backlash.",
+    description: "Cash kept above the reserve earns a bonus, and build loans can pay back more.",
   },
   social_democracy: {
     label: "Social Democracy",
-    description: "High redistribution. Strong welfare. High taxes on properties.",
+    description: "Higher welfare and redistribution with higher property taxes.",
   },
 };
 
 export const GAME_MODES = {
-  standard: { label: "Standard", description: "Baseline PoorUp ruleset with normal pacing and full economic systems." },
-  speed: { label: "Speed", description: "Short-horizon mode with faster escalation timing and more aggressive race-to-monopoly play." },
-  chaos: { label: "Chaos", description: "Higher-instability mode with more social crises, faster spread, and heavier liquidity pressure." },
-  cooperative: { label: "Cooperative", description: "Deal-heavy mode with softer denial play, friendlier negotiations, and stronger coordination pressure." },
+  standard: { label: "Standard", description: "Normal rules and pacing." },
+  speed: { label: "Speed", description: "Shorter game with faster escalation." },
+  chaos: { label: "Chaos", description: "More social crises and faster unrest spread." },
+  cooperative: { label: "Cooperative", description: "More deal-making and fewer hard negotiation blocks." },
 };
 
 export const SPACE_ICONS = {

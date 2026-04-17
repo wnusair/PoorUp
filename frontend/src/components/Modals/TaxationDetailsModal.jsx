@@ -366,9 +366,9 @@ function OverviewTab({ economy, settings, welfareProjection, taxStats, governmen
     : `Showing ${budgetHistory.length} recorded round${budgetHistory.length === 1 ? '' : 's'}.`;
 
   const overviewTooltips = {
-    'Investor Mood': 'How friendly the market is right now. Higher mood makes liberal-democracy cash systems stronger.',
-    'Cash Bonus': `At round end, money kept above ${formatExactMoney(capitalYieldReserveFloor)} earns this bonus.`,
-    'Build Loan Bonus': 'This raises the most a build loan can pay back above its base cap.',
+    'Investor Mood': 'Higher Investor Mood increases cash bonuses and build loan payback caps.',
+    'Cash Bonus': `At round end, cash kept above ${formatExactMoney(capitalYieldReserveFloor)} earns this bonus.`,
+    'Build Loan Bonus': 'This increases the maximum total payback on build loans above their base cap.',
   };
 
   const ruleRows = [

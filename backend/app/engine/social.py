@@ -7,7 +7,7 @@ from datetime import datetime
 from statistics import median
 from typing import Any
 
-from app.engine.debt import spend_player_balance
+from app.engine.debt import enforce_plot_poverty_constraints, spend_player_balance
 from app.engine.economy import (
     LIBERAL_DEMOCRACY_MAX_CAPITAL_YIELD_RATE,
     calculate_net_worth,
@@ -1737,7 +1737,7 @@ def refresh_social_snapshot(game_state: dict) -> dict:
 
 
 def ensure_social_state(game_state: dict) -> dict:
-    return refresh_social_snapshot(game_state)
+    return refresh_social_snapshot(enforce_plot_poverty_constraints(game_state))
 
 
 def calculate_union_charge(prop: dict, game_state: dict, social: dict | None = None) -> float:

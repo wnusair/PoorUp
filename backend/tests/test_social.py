@@ -10,12 +10,14 @@ from flask import Flask  # noqa: E402
 
 from app import db  # noqa: E402
 from app.engine import bots, events  # noqa: E402
+from app.engine.game_loop import check_bankruptcy  # noqa: E402
 from app.engine.plot import (  # noqa: E402
     COMMUNIST_PLOT_OWNER_ID,
     seed_debug_communist_plot_state,
     start_communist_plot,
     submit_plot_action,
     submit_plot_counter_action,
+    submit_plot_join,
 )
 from app.engine.social import (  # noqa: E402
     MODE_PROFILE,
@@ -669,6 +671,350 @@ class SocialEngineTests(unittest.TestCase):
         self.assertEqual(updated_founder['plot_role'], 'founder')
         self.assertIn('founded the communist plot', result['summary'].lower())
 
+    def test_plot_founder_is_locked_to_poverty_and_surplus_moves_to_savings(self):
+        founder = make_player(1, 'Atlas', 90)
+        rival = make_player(2, 'Rival', 900)
+        broker = make_player(3, 'Broker', 1100)
+        state = make_state(
+            [founder, rival, broker],
+            [
+                make_property(1, 1, board_position=2, base_price=100, dev_level=0),
+                make_property(2, 2, board_position=4, base_price=180, dev_level=2),
+                make_property(3, 3, board_position=9, base_price=220, dev_level=2),
+            ],
+        )
+        state['current_round'] = 5
+        state['pending_debts'] = [{
+            'debtor_id': 1,
+            'creditor_id': 2,
+            'amount_due': 120.0,
+            'original_amount': 120.0,
+        }]
+
+        founded_state, _ = start_communist_plot(ensure_social_state(state), player_id=1)
+        founder_after_start = next(player for player in founded_state['players'] if player['id'] == 1)
+        self.assertTrue(founder_after_start['plot_locked_poverty'])
+        self.assertEqual(founder_after_start['plot_max_development_level'], 3)
+
+        enriched_state = dict(founded_state)
+        enriched_state['players'] = [
+            {**player, 'balance': 320.0} if player['id'] == 1 else dict(player)
+            for player in founded_state['players']
+        ]
+        normalized_state = ensure_social_state(enriched_state)
+        normalized_founder = next(player for player in normalized_state['players'] if player['id'] == 1)
+
+        self.assertEqual(normalized_founder['balance'], 150.0)
+        self.assertEqual(normalized_founder['plot_savings_balance'], 170.0)
+
+    def test_plot_founder_savings_rescue_prevents_bankruptcy(self):
+        founder = make_player(1, 'Atlas', 90)
+        rival = make_player(2, 'Rival', 900)
+        broker = make_player(3, 'Broker', 1100)
+        state = make_state(
+            [founder, rival, broker],
+            [
+                make_property(1, 1, board_position=2, base_price=100, dev_level=0),
+                make_property(2, 2, board_position=4, base_price=180, dev_level=2),
+                make_property(3, 3, board_position=9, base_price=220, dev_level=2),
+            ],
+        )
+        state['current_round'] = 5
+        founded_state, _ = start_communist_plot(ensure_social_state(state), player_id=1)
+        distressed_state = dict(founded_state)
+        distressed_state['players'] = [
+            {**player, 'balance': -60.0, 'plot_savings_balance': 140.0} if player['id'] == 1 else dict(player)
+            for player in founded_state['players']
+        ]
+
+        rescued_state = check_bankruptcy(distressed_state, 12, FakeRedis(), FakeSocket(), player_id=1)
+        rescued_founder = next(player for player in rescued_state['players'] if player['id'] == 1)
+
+        self.assertFalse(rescued_founder['is_bankrupt'])
+        self.assertEqual(rescued_founder['balance'], 0.0)
+        self.assertEqual(rescued_founder['plot_savings_balance'], 80.0)
+
+    def test_plot_member_can_request_join_and_commander_can_accept(self):
+        founder = make_player(1, 'Atlas', 90)
+        applicant = make_player(2, 'Rival', 400)
+        broker = make_player(3, 'Broker', 1100)
+        state = make_state(
+            [founder, applicant, broker],
+            [
+                make_property(1, 1, board_position=2, base_price=100, dev_level=0),
+                make_property(2, 3, board_position=4, base_price=180, dev_level=2),
+                make_property(3, 3, board_position=9, base_price=220, dev_level=2),
+            ],
+        )
+        state['current_round'] = 5
+        state['pending_debts'] = [{
+            'debtor_id': 1,
+            'creditor_id': 3,
+            'amount_due': 120.0,
+            'original_amount': 120.0,
+        }]
+
+        founded_state, _ = start_communist_plot(ensure_social_state(state), player_id=1)
+        requested_state, request_result = submit_plot_join(founded_state, player_id=2, payload={'intent': 'request'})
+        self.assertTrue(request_result['success'])
+        self.assertIn('requested to join', request_result['summary'].lower())
+        self.assertIn('2', requested_state['social']['plot']['join_requests'])
+
+        accepted_state, accept_result = submit_plot_join(
+            requested_state,
+            player_id=1,
+            payload={'intent': 'accept_request', 'target_player_id': 2},
+        )
+        accepted_applicant = next(player for player in accepted_state['players'] if player['id'] == 2)
+
+        self.assertTrue(accept_result['success'])
+        self.assertEqual(accepted_applicant['plot_role'], 'sympathizer')
+        self.assertEqual(accepted_applicant['balance'], 250.0)
+        self.assertNotIn('2', accepted_state['social']['plot']['join_requests'])
+
+    def test_plot_succession_uses_rank_then_contribution(self):
+        founder = make_player(1, 'Atlas', 90)
+        organizer_a = make_player(2, 'Rival', 450)
+        organizer_b = make_player(3, 'Broker', 450)
+        state = make_state([founder, organizer_a, organizer_b], [make_property(1, 1, board_position=2)])
+        state['current_round'] = 7
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'founder_id': 1,
+                'stage': 3,
+                'created_round': 5,
+                'public': True,
+                'support': 16.0,
+                'supply': 9.0,
+                'heat': 18.0,
+                'support_generated_total': 20.0,
+                'commander_id': 1,
+                'members': {
+                    '1': {
+                        'player_id': 1,
+                        'role': 'founder',
+                        'is_founder': True,
+                        'active': True,
+                        'joined_round': 5,
+                        'cash_contributed': 50.0,
+                    },
+                    '2': {
+                        'player_id': 2,
+                        'role': 'committed_member',
+                        'active': True,
+                        'joined_round': 5,
+                        'cash_contributed': 125.0,
+                    },
+                    '3': {
+                        'player_id': 3,
+                        'role': 'committed_member',
+                        'active': True,
+                        'joined_round': 4,
+                        'cash_contributed': 80.0,
+                    },
+                },
+            },
+        }
+        state['players'][0]['is_bankrupt'] = True
+
+        refreshed_state = ensure_social_state(state)
+        plot = refreshed_state['social']['plot']
+
+        self.assertEqual(plot['commander']['player_id'], 2)
+        self.assertEqual(plot['command_chain'][0]['player_id'], 2)
+        self.assertEqual(plot['command_chain'][1]['player_id'], 3)
+
+    def test_plot_snapshot_includes_next_stage_and_promotion_progress(self):
+        founder = make_player(1, 'Atlas', 120)
+        recruit = make_player(2, 'Rival', 240)
+        state = make_state([founder, recruit], [make_property(1, 1, board_position=2, base_price=100, dev_level=0)])
+        state['current_round'] = 5
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'founder_id': 1,
+                'commander_id': 1,
+                'stage': 2,
+                'created_round': 3,
+                'public': False,
+                'support': 4.0,
+                'supply': 2.0,
+                'heat': 25.0,
+                'support_generated_total': 8.0,
+                'members': {
+                    '1': {
+                        'player_id': 1,
+                        'role': 'founder',
+                        'is_founder': True,
+                        'active': True,
+                        'joined_round': 3,
+                        'contribution_rounds': [3],
+                        'required_contribution_rounds': 1,
+                        'required_successful_actions': 1,
+                        'successful_actions_supported': 1,
+                    },
+                    '2': {
+                        'player_id': 2,
+                        'role': 'sympathizer',
+                        'active': True,
+                        'joined_round': 4,
+                        'contribution_rounds': [4],
+                        'required_contribution_rounds': 2,
+                        'required_successful_actions': 1,
+                        'successful_actions_supported': 0,
+                    },
+                },
+            },
+        }
+
+        refreshed_state = ensure_social_state(state)
+        plot = refreshed_state['social']['plot']
+        recruit_entry = next(entry for entry in plot['command_chain'] if entry['player_id'] == 2)
+
+        self.assertEqual(plot['next_stage']['stage'], 3)
+        self.assertEqual(plot['next_stage']['stage_name'], 'Open Seizure')
+        self.assertTrue(any(entry['label'] == 'Support 4/6' for entry in plot['next_stage']['requirements']))
+        self.assertEqual(recruit_entry['next_role'], 'organizer')
+        self.assertEqual(recruit_entry['contribution_round_count'], 1)
+        self.assertEqual(recruit_entry['required_contribution_rounds'], 2)
+        self.assertFalse(recruit_entry['promotion_ready'])
+
+    def test_plot_reintegration_requires_more_than_two_pushes_on_entrenched_property(self):
+        founder = make_player(1, 'Atlas', 850)
+        former_owner = make_player(2, 'Rival', 1000)
+        coalition_partner = make_player(3, 'Broker', 1000)
+        state = make_state(
+            [founder, former_owner, coalition_partner],
+            [
+                make_property(1, 2, board_position=2, base_price=220, dev_level=1),
+                make_property(2, 1, board_position=4, base_price=100, dev_level=0),
+                make_property(3, 3, board_position=9, base_price=120, dev_level=0),
+            ],
+        )
+        state['current_round'] = 6
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'founder_id': 1,
+                'stage': 3,
+                'created_round': 4,
+                'public': True,
+                'support': 20.0,
+                'supply': 10.0,
+                'heat': 10.0,
+                'support_generated_total': 20.0,
+                'members': {
+                    '1': {
+                        'player_id': 1,
+                        'role': 'committed_member',
+                        'is_founder': True,
+                        'active': True,
+                        'joined_round': 4,
+                        'successful_actions_supported': 2,
+                        'contribution_rounds': [4, 5],
+                        'required_contribution_rounds': 2,
+                        'required_successful_actions': 1,
+                    },
+                },
+                'regions': {
+                    'Africa': {
+                        'seeded_cells': 1,
+                    },
+                },
+            },
+            'properties': {
+                '1': {
+                    'plot_agitation': 3,
+                },
+            },
+        }
+
+        seized_state, _ = submit_plot_action(state, player_id=1, action_type='attempt_seizure', payload={'property_id': 1})
+        fortified_state, _ = submit_plot_action(seized_state, player_id=1, action_type='fortify_property', payload={'property_id': 1})
+        coalition_state, _ = submit_plot_counter_action(fortified_state, player_id=2, action_type='join_coalition')
+        coalition_state, _ = submit_plot_counter_action(coalition_state, player_id=3, action_type='join_coalition')
+
+        first_push_state, _ = submit_plot_counter_action(
+            coalition_state,
+            player_id=2,
+            action_type='reintegration_campaign',
+            payload={'property_id': 1, 'supporter_ids': [2]},
+        )
+        second_push_state, second_push = submit_plot_counter_action(
+            first_push_state,
+            player_id=3,
+            action_type='reintegration_campaign',
+            payload={'property_id': 1, 'supporter_ids': [3]},
+        )
+
+        second_entry = second_push_state['social']['properties']['1']
+        self.assertTrue(second_push['success'])
+        self.assertIn('pushed reintegration forward', second_push['summary'].lower())
+        self.assertTrue(second_entry['plot_seized'])
+        self.assertLess(second_entry['plot_reintegration_progress'], 100)
+
+    def test_reintegration_waives_supporter_requirement_when_no_cosponsor_exists(self):
+        founder = make_player(1, 'Atlas', 850)
+        former_owner = make_player(2, 'Rival', 1000)
+        state = make_state(
+            [founder, former_owner],
+            [
+                make_property(1, 2, board_position=2, base_price=220, dev_level=1),
+                make_property(2, 1, board_position=4, base_price=100, dev_level=0),
+            ],
+        )
+        state['current_round'] = 6
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'founder_id': 1,
+                'stage': 3,
+                'created_round': 4,
+                'public': True,
+                'support': 20.0,
+                'supply': 10.0,
+                'heat': 10.0,
+                'support_generated_total': 20.0,
+                'members': {
+                    '1': {
+                        'player_id': 1,
+                        'role': 'committed_member',
+                        'is_founder': True,
+                        'active': True,
+                        'joined_round': 4,
+                        'successful_actions_supported': 2,
+                        'contribution_rounds': [4, 5],
+                        'required_contribution_rounds': 2,
+                        'required_successful_actions': 1,
+                    },
+                },
+                'regions': {
+                    'Africa': {
+                        'seeded_cells': 1,
+                    },
+                },
+            },
+            'properties': {
+                '1': {
+                    'plot_agitation': 3,
+                },
+            },
+        }
+
+        seized_state, _ = submit_plot_action(state, player_id=1, action_type='attempt_seizure', payload={'property_id': 1})
+        coalition_state, _ = submit_plot_counter_action(seized_state, player_id=2, action_type='join_coalition')
+        reintegration_state, result = submit_plot_counter_action(
+            coalition_state,
+            player_id=2,
+            action_type='reintegration_campaign',
+            payload={'property_id': 1},
+        )
+
+        self.assertTrue(result['success'])
+        self.assertIn('pushed reintegration forward', result['summary'].lower())
+        self.assertTrue(reintegration_state['social']['properties']['1']['plot_seized'])
+
     def test_plot_seizure_can_be_reintegrated_by_coalition(self):
         founder = make_player(1, 'Atlas', 850)
         former_owner = make_player(2, 'Rival', 1000)
@@ -747,7 +1093,8 @@ class SocialEngineTests(unittest.TestCase):
                 'supporter_ids': [2],
             },
         )
-        final_state, second_push = submit_plot_counter_action(
+        first_push_state = {**first_push_state, 'current_round': 7}
+        second_push_state, second_push = submit_plot_counter_action(
             first_push_state,
             player_id=3,
             action_type='reintegration_campaign',
@@ -756,13 +1103,25 @@ class SocialEngineTests(unittest.TestCase):
                 'supporter_ids': [3],
             },
         )
+        second_push_state = {**second_push_state, 'current_round': 8}
+
+        final_state, third_push = submit_plot_counter_action(
+            second_push_state,
+            player_id=2,
+            action_type='reintegration_campaign',
+            payload={
+                'property_id': 1,
+                'supporter_ids': [2],
+            },
+        )
 
         restored_property = next(prop for prop in final_state['properties'] if prop['id'] == 1)
         restored_entry = final_state['social']['properties']['1']
 
         self.assertIn('pushed reintegration forward', first_push['summary'].lower())
         self.assertTrue(second_push['success'])
-        self.assertIn('reintegrated', second_push['summary'].lower())
+        self.assertIn('pushed reintegration forward', second_push['summary'].lower())
+        self.assertIn('reintegrated', third_push['summary'].lower())
         self.assertEqual(restored_property['owner_id'], 2)
         self.assertFalse(restored_entry['plot_seized'])
         self.assertCountEqual(final_state['social']['plot']['coalition_member_ids'], [2, 3])
