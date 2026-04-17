@@ -519,6 +519,60 @@ class BotStrategyTests(unittest.TestCase):
         self.assertEqual(action['action_type'], 'attempt_seizure')
         self.assertEqual(action['property_id'], 24)
 
+    def test_bot_seeds_cells_before_mutual_aid_when_plot_network_is_incomplete(self):
+        player = make_player(1, 'Atlas', 200)
+        player.update({'plot_role': 'founder'})
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        state = make_state([player, rival], [], government_type='social_democracy', round_number=4)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': False,
+                'stage': 1,
+                'support': 6.0,
+                'supply': 0.0,
+                'member_ids': [1],
+                'regions': {
+                    'Africa': {'hardship_pressure': 4, 'seeded_cells': 0},
+                    'South Asia': {'hardship_pressure': 3, 'seeded_cells': 0},
+                },
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_action')
+        self.assertEqual(action['action_type'], 'seed_cell')
+
+    def test_bot_stockpiles_supply_during_stage_two_before_more_soft_actions(self):
+        player = make_player(1, 'Atlas', 200)
+        player.update({'plot_role': 'committed_member'})
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        state = make_state([player, rival], [], government_type='social_democracy', round_number=6)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': False,
+                'stage': 2,
+                'support': 8.0,
+                'supply': 1.0,
+                'member_ids': [1],
+                'committed_member_ids': [1],
+                'regions': {
+                    'Africa': {'hardship_pressure': 4, 'seeded_cells': 2},
+                },
+                'legal_targets': [],
+            },
+            'properties': {},
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_action')
+        self.assertEqual(action['action_type'], 'stockpile_supply')
+
     def test_bot_accepts_plot_invite_before_other_management_actions(self):
         player = make_player(1, 'Atlas', 400)
         player.update({
@@ -542,6 +596,35 @@ class BotStrategyTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertEqual(action['type'], 'plot_join')
         self.assertEqual(action['intent'], 'accept')
+
+    def test_bot_declines_plot_invite_when_private_win_path_is_strong(self):
+        player = make_player(1, 'Atlas', 400)
+        player.update({
+            'plot_hardship_score': 3,
+            'plot_hardship_trigger_count': 3,
+        })
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        properties = [
+            make_property(21, 'Red One', '#EAB308', 220, owner_id=1, board_position=21, dev_level=2),
+            make_property(22, 'Red Two', '#EAB308', 220, owner_id=1, board_position=22, dev_level=1),
+            make_property(23, 'Red Three', '#EAB308', 240, owner_id=1, board_position=23, dev_level=1),
+        ]
+        state = make_state([player, rival], properties, government_type='social_democracy', round_number=6)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'join_invites': {
+                    '1': {'player_id': 1, 'invited_by': 2, 'round': 6},
+                },
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_join')
+        self.assertEqual(action['intent'], 'decline')
 
     def test_bot_coalition_member_targets_reintegration(self):
         player = make_player(1, 'Atlas', 900)
@@ -597,6 +680,39 @@ class BotStrategyTests(unittest.TestCase):
         self.assertIsNotNone(action)
         self.assertEqual(action['type'], 'plot_join')
         self.assertEqual(action['intent'], 'request')
+
+    def test_bot_leaves_plot_when_monopoly_path_is_stronger_than_shared_victory(self):
+        player = make_player(1, 'Atlas', 700)
+        player.update({'plot_role': 'committed_member'})
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        properties = [
+            make_property(21, 'Red One', '#EAB308', 220, owner_id=1, board_position=21, dev_level=2),
+            make_property(22, 'Red Two', '#EAB308', 220, owner_id=1, board_position=22, dev_level=1),
+            make_property(23, 'Red Three', '#EAB308', 240, owner_id=1, board_position=23, dev_level=1),
+        ]
+        state = make_state([player, rival], properties, government_type='social_democracy', round_number=7)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'stage': 3,
+                'support': 9.0,
+                'supply': 4.0,
+                'member_ids': [1],
+                'committed_member_ids': [1],
+                'control_percent': 10.0,
+                'seized_property_ids': [11],
+                'victory_countdown': {'active': False, 'countdown_eligible': False},
+                'regions': {
+                    'Africa': {'hardship_pressure': 2, 'seeded_cells': 1},
+                },
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_leave')
 
     def test_plot_commander_accepts_pending_join_request(self):
         player = make_player(1, 'Atlas', 220)

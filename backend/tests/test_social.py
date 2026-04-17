@@ -18,6 +18,7 @@ from app.engine.plot import (  # noqa: E402
     submit_plot_action,
     submit_plot_counter_action,
     submit_plot_join,
+    submit_plot_leave,
 )
 from app.engine.social import (  # noqa: E402
     MODE_PROFILE,
@@ -733,6 +734,59 @@ class SocialEngineTests(unittest.TestCase):
         self.assertFalse(rescued_founder['is_bankrupt'])
         self.assertEqual(rescued_founder['balance'], 0.0)
         self.assertEqual(rescued_founder['plot_savings_balance'], 80.0)
+
+    def test_plot_cannot_be_founded_after_building_out_a_monopoly(self):
+        founder = make_player(1, 'Atlas', 70)
+        rival = make_player(2, 'Rival', 900)
+        broker = make_player(3, 'Broker', 1100)
+        state = make_state(
+            [founder, rival, broker],
+            [
+                make_property(1, 1, board_position=2, base_price=180, dev_level=4, group_color='#8B4513'),
+                make_property(2, 1, board_position=4, base_price=200, dev_level=3, group_color='#8B4513'),
+                make_property(3, 2, board_position=9, base_price=220, dev_level=1, group_color='#EC4899'),
+                make_property(4, 3, board_position=10, base_price=240, dev_level=1, group_color='#EC4899'),
+            ],
+        )
+        state['current_round'] = 5
+        state['pending_debts'] = [{
+            'debtor_id': 1,
+            'creditor_id': 2,
+            'amount_due': 140.0,
+            'original_amount': 140.0,
+        }]
+
+        prepared_state = ensure_social_state(state)
+        prepared_founder = next(player for player in prepared_state['players'] if player['id'] == 1)
+
+        self.assertGreaterEqual(prepared_founder['plot_hardship_trigger_count'], 2)
+        self.assertFalse(prepared_founder['plot_can_found'])
+        with self.assertRaisesRegex(ValueError, 'built-out monopoly|development cap|heavily developed'):
+            start_communist_plot(prepared_state, player_id=1)
+
+    def test_plot_leave_releases_founder_poverty_lock_and_saved_cash(self):
+        founder = make_player(1, 'Atlas', 320)
+        rival = make_player(2, 'Rival', 900)
+        broker = make_player(3, 'Broker', 1100)
+        state = make_state(
+            [founder, rival, broker],
+            [
+                make_property(1, 1, board_position=2, base_price=100, dev_level=0),
+                make_property(2, 2, board_position=4, base_price=180, dev_level=2),
+                make_property(3, 3, board_position=9, base_price=220, dev_level=2),
+            ],
+        )
+        state['current_round'] = 5
+        founded_state, _ = start_communist_plot(ensure_social_state(state), player_id=1)
+
+        left_state, result = submit_plot_leave(founded_state, player_id=1)
+        founder_after_leave = next(player for player in left_state['players'] if player['id'] == 1)
+
+        self.assertTrue(result['success'])
+        self.assertFalse(founder_after_leave['plot_locked_poverty'])
+        self.assertEqual(founder_after_leave['plot_savings_balance'], 0.0)
+        self.assertEqual(founder_after_leave['balance'], 320.0)
+        self.assertIsNone(founder_after_leave['plot_role'])
 
     def test_plot_member_can_request_join_and_commander_can_accept(self):
         founder = make_player(1, 'Atlas', 90)

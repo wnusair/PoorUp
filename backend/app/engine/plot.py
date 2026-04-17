@@ -845,6 +845,24 @@ def _lock_plot_founder_poverty(game_state: dict, player_id: int) -> dict:
     )
 
 
+def _release_plot_founder_poverty(game_state: dict, player_id: int) -> dict:
+    player = _player_index(game_state).get(int(player_id))
+    if player is None or not bool(player.get("plot_locked_poverty", False)):
+        return game_state
+    released_balance = _round(float(player.get("balance", 0) or 0) + float(player.get("plot_savings_balance", 0) or 0), 2)
+    return _replace_player(
+        game_state,
+        player_id,
+        {
+            "balance": released_balance,
+            "plot_locked_poverty": False,
+            "plot_poverty_balance_cap": 0.0,
+            "plot_savings_balance": 0.0,
+            "plot_max_development_level": None,
+        },
+    )
+
+
 def _admit_plot_member(next_state: dict, plot: dict, *, player_id: int, current_round: int, source: str) -> tuple[dict, dict, dict]:
     player_lookup = _player_index(next_state)
     player = player_lookup.get(int(player_id))
@@ -976,6 +994,40 @@ def _monopoly_count_for_player(player_id: int, game_state: dict) -> int:
         and prop.get("property_type") == "property"
         and has_full_monopoly(prop, game_state)
     )
+
+
+def _player_plot_holdings_summary(player_id: int, game_state: dict) -> dict:
+    owned_properties = [prop for prop in _ownable_properties(game_state) if _property_owned_by_player(prop, player_id)]
+    total_development = 0
+    highest_property_development = 0
+    monopoly_development_by_group: dict[str, int] = {}
+    for prop in owned_properties:
+        development_level = max(0, int(prop.get("dev_level", 0) or 0))
+        total_development += development_level
+        highest_property_development = max(highest_property_development, development_level)
+        if prop.get("property_type") != "property" or not has_full_monopoly(prop, game_state):
+            continue
+        group_key = str(prop.get("group_color") or prop.get("region") or prop.get("id") or "")
+        monopoly_development_by_group[group_key] = monopoly_development_by_group.get(group_key, 0) + development_level
+    return {
+        "property_count": len(owned_properties),
+        "total_development": total_development,
+        "highest_property_development": highest_property_development,
+        "monopoly_count": len(monopoly_development_by_group),
+        "largest_monopoly_development": max(monopoly_development_by_group.values(), default=0),
+    }
+
+
+def _plot_founding_lockout_reasons(player_id: int, game_state: dict) -> list[str]:
+    holdings = _player_plot_holdings_summary(player_id, game_state)
+    reasons: list[str] = []
+    if int(holdings.get("highest_property_development", 0) or 0) > PLOT_FOUNDER_MAX_DEVELOPMENT_LEVEL:
+        reasons.append("Players cannot found the communist plot after already building above the plot's development cap.")
+    if int(holdings.get("largest_monopoly_development", 0) or 0) >= max(4, PLOT_FOUNDER_MAX_DEVELOPMENT_LEVEL + 1):
+        reasons.append("Players with a built-out monopoly cannot pivot into the communist plot.")
+    if int(holdings.get("total_development", 0) or 0) >= 6:
+        reasons.append("Players with a heavily developed property empire cannot found the communist plot.")
+    return reasons
 
 
 def _recent_player_setback(game_state: dict, player: dict, current_round: int) -> bool:
@@ -1421,6 +1473,10 @@ def _dissolve_plot(game_state: dict, reason: str | None = None) -> dict:
         updated_properties.append(next_prop)
 
     next_state["properties"] = updated_properties
+    for player in list(next_state.get("players", [])):
+        player_id = int(player.get("id") or 0)
+        if player_id > 0 and bool(player.get("plot_locked_poverty", False)):
+            next_state = _release_plot_founder_poverty(next_state, player_id)
     social["plot"] = plot
     social["properties"] = social_properties
     next_state["social"] = social
@@ -1492,6 +1548,7 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
     hardship_by_player: dict[int, dict] = {}
     for player in next_state.get("players", []):
         next_player = dict(player)
+        player_id = int(next_player.get("id") or 0)
         hardship = _evaluate_hardship(
             next_player,
             next_state,
@@ -1502,15 +1559,17 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
             median_rent,
             bailout_history,
         )
-        hardship_by_player[int(next_player.get("id") or 0)] = hardship
+        hardship_by_player[player_id] = hardship
+        founding_lockout_reasons = _plot_founding_lockout_reasons(player_id, next_state)
         next_player["plot_hardship_score"] = int(hardship["score"])
         next_player["plot_hardship_trigger_count"] = int(hardship["trigger_count"])
         next_player["plot_hardship_triggers"] = list(hardship["triggers"])
         next_player["plot_hardship_reasons"] = list(hardship["reasons"])
+        next_player["plot_founding_lockout_reasons"] = list(founding_lockout_reasons)
         next_player["plot_hidden_hardship_pressure"] = int(hardship["hidden_pressure"])
         next_player["plot_bottom_half_streak"] = int(hardship["bottom_half_streak"])
         next_player["plot_last_hardship_round"] = current_round
-        member = (plot.get("members") or {}).get(str(int(next_player.get("id") or 0))) or {}
+        member = (plot.get("members") or {}).get(str(player_id)) or {}
         next_player["plot_role"] = member.get("role") if member.get("active", True) else None
         next_player["plot_join_round"] = member.get("joined_round")
         next_player["plot_defection_cooldown_until"] = int(member.get("defection_cooldown_until", 0) or 0)
@@ -1520,8 +1579,9 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
             not plot.get("exists")
             and current_round >= 4
             and not next_player.get("is_bankrupt")
-            and int(next_player.get("id") or 0) != int(wealthiest_player_id or 0)
+            and player_id != int(wealthiest_player_id or 0)
             and hardship.get("eligible")
+            and not founding_lockout_reasons
         )
         updated_players.append(next_player)
     next_state["players"] = updated_players
@@ -1992,6 +2052,9 @@ def start_communist_plot(game_state: dict, *, player_id: int) -> tuple[dict, dic
         raise ValueError("Only one communist plot may exist in a match.")
     if current_round < 4:
         raise ValueError("The communist plot only unlocks from round 4 onward.")
+    founding_lockout_reasons = _plot_founding_lockout_reasons(player_id, next_state)
+    if founding_lockout_reasons:
+        raise ValueError(founding_lockout_reasons[0])
     if not bool(player.get("plot_can_found", False)):
         raise ValueError("This player does not meet the hardship requirements to found the communist plot.")
 
@@ -2636,6 +2699,7 @@ def submit_plot_leave(game_state: dict, *, player_id: int) -> tuple[dict, dict]:
         success=True,
         summary=f"{(_player_index(next_state).get(player_id) or {}).get('username', 'A player')} defected from the communist plot.",
     )
+    next_state = _release_plot_founder_poverty(next_state, player_id)
     next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
     next_state = _refresh_state(next_state)
     if not (_get_plot(next_state).get("member_ids") or []):

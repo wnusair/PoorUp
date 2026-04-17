@@ -8,7 +8,7 @@ const MAX_CENTER_LOG_ENTRIES = 18;
 export default function CenterLogDock() {
   const logEntries = useGameStore((state) => state.logEntries);
   const players = useGameStore((state) => state.players);
-  const bottomRef = useRef(null);
+  const scrollContainerRef = useRef(null);
 
   const playerMap = useMemo(
     () => Object.fromEntries((players || []).map((player) => [player.id, player])),
@@ -23,13 +23,24 @@ export default function CenterLogDock() {
     [logEntries, playerMap],
   );
 
+  const latestEntryId = entries.at(-1)?.id ?? null;
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [entries.length]);
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTop = container.scrollHeight;
+  }, [latestEntryId]);
 
   return (
     <div className="pointer-events-auto absolute bottom-[clamp(0.75rem,2vh,1.5rem)] left-1/2 z-10 w-[min(92%,34rem)] -translate-x-1/2">
-      <div className="max-h-[clamp(7rem,22vh,11rem)] overflow-y-auto pr-2">
+      <div
+        ref={scrollContainerRef}
+        aria-label="Recent game events"
+        className="max-h-[clamp(7rem,22vh,11rem)] overflow-y-auto pr-2"
+      >
         {entries.length === 0 ? (
           <p className="text-xs text-slate-500">No game events yet.</p>
         ) : (
@@ -52,7 +63,6 @@ export default function CenterLogDock() {
                 </div>
               );
             })}
-            <div ref={bottomRef} />
           </div>
         )}
       </div>

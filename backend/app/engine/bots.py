@@ -2637,6 +2637,60 @@ def _plot_region_order(plot: dict) -> list[str]:
     return [str(region_name) for region_name, _region_state in regions]
 
 
+def _plot_total_seeded_cells(plot: dict) -> int:
+    return sum(int((region_state or {}).get("seeded_cells", 0) or 0) for region_state in (plot.get("regions") or {}).values())
+
+
+def _plot_near_victory(plot: dict) -> bool:
+    victory = dict(plot.get("victory_countdown") or {})
+    return bool(
+        victory.get("active")
+        or victory.get("countdown_eligible")
+        or int(plot.get("stage", 0) or 0) >= 4
+        and (
+            float(plot.get("control_percent", 0) or 0) >= 24.0
+            or len(plot.get("seized_property_ids") or []) >= 6
+        )
+    )
+
+
+def _plot_private_win_signal(player: dict, game_state: dict) -> dict[str, float | int | bool]:
+    player_id = int(player.get("id") or 0)
+    owned_properties = []
+    total_development = 0
+    monopoly_groups: set[str] = set()
+    for prop in game_state.get("properties", []):
+        owner_id = prop.get("owner_id")
+        if not isinstance(owner_id, int) or owner_id != player_id:
+            continue
+        if prop.get("property_type") not in {"property", "transit"}:
+            continue
+        owned_properties.append(prop)
+        total_development += max(0, int(prop.get("dev_level", 0) or 0))
+        if prop.get("property_type") == "property" and has_full_monopoly(prop, game_state):
+            monopoly_groups.add(str(prop.get("group_color") or prop.get("region") or prop.get("id") or ""))
+
+    active_players = [candidate for candidate in game_state.get("players", []) if not candidate.get("is_bankrupt")]
+    net_worths = sorted(
+        (float(calculate_net_worth(candidate, game_state) or 0) for candidate in active_players),
+        reverse=True,
+    )
+    player_net_worth = float(calculate_net_worth(player, game_state) or 0)
+    median_net_worth = net_worths[len(net_worths) // 2] if net_worths else 0.0
+    return {
+        "property_count": len(owned_properties),
+        "total_development": total_development,
+        "monopoly_count": len(monopoly_groups),
+        "net_worth": player_net_worth,
+        "median_net_worth": median_net_worth,
+        "strong_private_path": bool(
+            monopoly_groups
+            or total_development >= 4
+            or (len(owned_properties) >= 5 and player_net_worth >= median_net_worth * 1.1)
+        ),
+    }
+
+
 def _choose_plot_counter_action(player: dict, plot: dict, profile: dict[str, Any]) -> dict[str, Any] | None:
     player_id = int(player.get("id") or 0)
     balance = float(player.get("balance", 0) or 0)
@@ -2738,6 +2792,10 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     request_pending = bool((plot.get("join_requests") or {}).get(str(player_id)))
     defection_cooldown_until = int(player.get("plot_defection_cooldown_until", 0) or 0)
     plot_role = str(player.get("plot_role") or "")
+    total_seeded_cells = _plot_total_seeded_cells(plot)
+    private_win_signal = _plot_private_win_signal(player, game_state)
+    strong_private_path = bool(private_win_signal.get("strong_private_path"))
+    plot_close_to_victory = _plot_near_victory(plot)
     commander_id = int(((plot.get("commander") or {}).get("player_id") or plot.get("commander_id") or 0) or 0)
     seized_properties = sorted(
         [entry for entry in (plot.get("seized_properties") or []) if entry.get("property_id") is not None],
@@ -2781,15 +2839,22 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         reverse=True,
     )
     region_order = _plot_region_order(plot)
+    unseeded_regions = [
+        region_name
+        for region_name in region_order
+        if int(((plot.get("regions") or {}).get(region_name) or {}).get("seeded_cells", 0) or 0) <= 0
+    ]
 
     if player_id not in member_ids:
         if invite_pending and current_round > defection_cooldown_until:
+            if strong_private_path and not plot_close_to_victory:
+                return {"type": "plot_join", "intent": "decline", "reason": "protect_private_win_path"}
             join_cost = 0.0 if hardship_triggers >= 2 else 150.0
             if balance >= join_cost:
                 return {"type": "plot_join", "intent": "accept", "reason": "invited_alignment"}
         if player_id in coalition_member_ids:
             return _choose_plot_counter_action(player, plot, profile)
-        if not request_pending and current_round > defection_cooldown_until and (bool(plot.get("public")) or hardship_triggers >= 2):
+        if not request_pending and current_round > defection_cooldown_until and (bool(plot.get("public")) or hardship_triggers >= 2) and not strong_private_path:
             return {"type": "plot_join", "intent": "request", "reason": "self_recruitment_under_pressure"}
         if bool(plot.get("public")) and bool(plot.get("coalition_unlocked")):
             return {
@@ -2798,6 +2863,9 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
                 "reason": "counter_revolution_alignment",
             }
         return None
+
+    if strong_private_path and not plot_close_to_victory:
+        return {"type": "plot_leave", "reason": "protect_private_win_path"}
 
     if plot_role == "sympathizer":
         contribution_round_target = 4 if hardship_triggers < 2 else 2
@@ -2810,6 +2878,22 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
                 "reason": "build_membership_credibility",
             }
         return None
+
+    ready_sympathizer = next(
+        (
+            entry
+            for entry in (plot.get("command_chain") or [])
+            if str(entry.get("role") or "") == "sympathizer" and bool(entry.get("promotion_ready"))
+        ),
+        None,
+    )
+    if commander_id == player_id and ready_sympathizer is not None and int(plot.get("stage", 0) or 0) >= 2 and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("supply", 0) or 0) >= 1:
+        return {
+            "type": "plot_action",
+            "action_type": "convert_to_organizer",
+            "target_player_id": int(ready_sympathizer.get("player_id") or 0),
+            "reason": "promote_ready_cadre",
+        }
 
     if commander_id == player_id and pending_join_requests:
         viable_request = next(
@@ -2836,6 +2920,22 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             "action_type": "defend_reintegration",
             "property_id": int(seized_properties[0]["property_id"]),
             "reason": "hold_revolutionary_control",
+        }
+
+    if unseeded_regions and int(plot.get("stage", 0) or 0) <= 1 and total_seeded_cells < 2 and float(plot.get("support", 0) or 0) >= 3:
+        return {
+            "type": "plot_action",
+            "action_type": "seed_cell",
+            "region": unseeded_regions[0],
+            "reason": "build_hidden_network",
+        }
+
+    if int(plot.get("stage", 0) or 0) >= 2 and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("supply", 0) or 0) < 4:
+        return {
+            "type": "plot_action",
+            "action_type": "stockpile_supply",
+            "region": region_order[0] if region_order else None,
+            "reason": "reach_seizure_supply_threshold",
         }
 
     if int(plot.get("stage", 0) or 0) >= 4 and clusters and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("supply", 0) or 0) >= 4:
@@ -2900,11 +3000,6 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             "reason": "keep_support_alive",
         }
 
-    unseeded_regions = [
-        region_name
-        for region_name in region_order
-        if int(((plot.get("regions") or {}).get(region_name) or {}).get("seeded_cells", 0) or 0) <= 0
-    ]
     if unseeded_regions and int(plot.get("stage", 0) or 0) <= 2 and float(plot.get("support", 0) or 0) >= 3:
         return {
             "type": "plot_action",
@@ -2914,13 +3009,6 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         }
 
     if int(plot.get("stage", 0) or 0) >= 2 and float(plot.get("support", 0) or 0) >= 2:
-        if int(plot.get("stage", 0) or 0) >= 3 and float(plot.get("supply", 0) or 0) < 4:
-            return {
-                "type": "plot_action",
-                "action_type": "stockpile_supply",
-                "region": region_order[0] if region_order else None,
-                "reason": "build_logistics_before_expansion",
-            }
         agitation_targets = []
         for prop in game_state.get("properties", []):
             prop_id = int(prop.get("id") or 0)

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useGameStore } from '../../hooks/useGameState';
 import LogEntry from './LogEntry';
-import { LOG_EVENT_COLORS } from '../../utils/constants';
 
 const EVENT_TYPE_GROUPS = [
   { label: 'Movement', types: ['dice_roll', 'move', 'turn_timeout'] },
@@ -16,7 +15,7 @@ const MAX_RENDERED_LOG_ENTRIES = 120;
 
 export default function GameLog() {
   const { logEntries, players } = useGameStore();
-  const bottomRef = useRef(null);
+  const scrollContainerRef = useRef(null);
   const [activeFilters, setActiveFilters] = useState(new Set(ALL_TYPES));
   const [showFilters, setShowFilters] = useState(false);
 
@@ -30,10 +29,17 @@ export default function GameLog() {
     }))
     .slice(-MAX_RENDERED_LOG_ENTRIES);
 
+  const latestVisibleEntryId = filtered.at(-1)?.id ?? null;
+
   // Auto-scroll to bottom
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logEntries.length]);
+    const container = scrollContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTop = container.scrollHeight;
+  }, [latestVisibleEntryId]);
 
   const toggleFilter = (type) => {
     setActiveFilters((prev) => {
@@ -115,14 +121,17 @@ export default function GameLog() {
       )}
 
       {/* Log content */}
-      <div className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5">
+      <div
+        ref={scrollContainerRef}
+        aria-label="Game log entries"
+        className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5"
+      >
         {filtered.length === 0 && (
           <p className="text-xs text-gray-600 italic text-center mt-4">No events to display.</p>
         )}
         {filtered.map((entry) => (
           <LogEntry key={entry.id} entry={entry} />
         ))}
-        <div ref={bottomRef} />
       </div>
     </div>
   );
