@@ -17,6 +17,7 @@ export default function ActionPanel({
     diceRolledThisTurn,
     isRolling,
     players,
+    currentPlayerId,
     myPlayerId,
     pendingDebts,
     settings,
@@ -25,7 +26,11 @@ export default function ActionPanel({
     activeModal,
     movingPlayerId,
     awaitingEndTurnPlayerId,
+    gamePaused,
+    pauseMessage,
+    pausedPlayerId,
     setActiveModal,
+    cardDrawData,
   } = useGameStore();
 
   const myTurn = isMyTurn();
@@ -47,13 +52,15 @@ export default function ActionPanel({
   const bailoutAvailable = bailoutEnabled && treasuryBalance >= bailoutAmount;
 
   const propertyPrompt = pendingAction?.type === 'buy_property' && pendingAction?.data?.player_id === myPlayerId;
-  const turnResolutionModalOpen = ['property', 'card', 'auction', 'bankruptcy', 'game_over'].includes(activeModal);
+  const turnResolutionModalOpen = ['property', 'auction', 'bankruptcy', 'game_over'].includes(activeModal) || Boolean(cardDrawData);
   const canEndTurn = myTurn
+    && !gamePaused
     && awaitingEndTurnPlayerId === myPlayerId
     && !isInDebt
     && !propertyPrompt
     && movingPlayerId == null
     && !turnResolutionModalOpen;
+  const pausedPlayer = players.find((player) => player.id === pausedPlayerId) || players.find((player) => player.id === currentPlayerId) || null;
 
   return (
     <div className="space-y-4">
@@ -64,7 +71,16 @@ export default function ActionPanel({
       <div className="flex flex-col items-center gap-3">
         <DiceDisplay />
 
-        {myTurn && !hasRolled && !isRolling && (
+        {gamePaused && (
+          <div className="w-full rounded-xl border border-amber-500/60 bg-amber-950/60 p-4 text-center shadow-lg shadow-amber-950/30">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-200">Game Paused</p>
+            <p className="mt-2 text-sm text-amber-100">
+              {pauseMessage || `${pausedPlayer?.username || 'A player'} is disconnected. Waiting for them to rejoin.`}
+            </p>
+          </div>
+        )}
+
+        {myTurn && !gamePaused && !hasRolled && !isRolling && (
           <div className="space-y-2 w-full">
             {inJail ? (
               <div className="space-y-2">
@@ -106,7 +122,7 @@ export default function ActionPanel({
           </div>
         )}
 
-        {myTurn && hasRolled && propertyPrompt && (
+        {myTurn && !gamePaused && hasRolled && propertyPrompt && (
           <button
             onClick={() => setActiveModal('property')}
             className="w-full py-2 px-3 bg-green-800 hover:bg-green-700 text-white text-sm rounded-lg font-medium transition"
@@ -115,7 +131,7 @@ export default function ActionPanel({
           </button>
         )}
 
-        {myTurn && isInDebt && (
+        {myTurn && !gamePaused && isInDebt && (
           <div className="w-full rounded-xl border border-red-500/70 bg-red-950/70 p-4 space-y-3 shadow-lg shadow-red-950/40">
             <div className="text-center space-y-1">
               <p className="text-red-200 font-bold tracking-wide">Negative Balance</p>
@@ -158,13 +174,13 @@ export default function ActionPanel({
           </div>
         )}
 
-        {myTurn && hasRolled && !propertyPrompt && !canEndTurn && !isInDebt && (
+        {myTurn && !gamePaused && hasRolled && !propertyPrompt && !canEndTurn && !isInDebt && (
           <p className="text-green-400 text-sm text-center">
             Dice rolled — turn resolving…
           </p>
         )}
 
-        {!myTurn && (
+        {!myTurn && !gamePaused && (
           <p className="text-gray-500 text-sm text-center italic">
             Waiting for other player…
           </p>

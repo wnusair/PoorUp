@@ -302,6 +302,7 @@ function applyGameStateSnapshot(gameState, actions) {
   }
 
   actions.setAwaitingEndTurnPlayerId(gameState.awaiting_end_turn_player_id ?? null);
+  actions.setPauseState(gameState);
 
   if (gameState.current_player_id != null) {
     actions.setCurrentPlayerId(gameState.current_player_id);
@@ -405,6 +406,8 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     enqueueModal,
     removeQueuedModal,
     setAwaitingEndTurnPlayerId,
+    setPauseState,
+    clearPauseState,
     setLobbyData,
     setSettings,
     setTakenColors,
@@ -463,6 +466,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
           setDiceRolledThisTurn,
           setIsRolling,
           setAwaitingEndTurnPlayerId,
+          setPauseState,
         });
       } else {
         if (data.players) setPlayers(normalizePlayers(data.players));
@@ -500,10 +504,12 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
         setDiceRolledThisTurn,
         setIsRolling,
         setAwaitingEndTurnPlayerId,
+        setPauseState,
       });
     });
 
     subscribe('turn_start', (data) => {
+      clearPauseState();
       setCurrentPlayerId(data.player_id);
       const state = useGameStore.getState();
       useGameStore.setState({
@@ -784,13 +790,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
           timestamp: new Date().toISOString(),
         });
 
-        const state = useGameStore.getState();
-        if (state.pendingAction?.type === 'buy_property') {
-          return;
-        }
-
-        setPendingAction({ type: 'card_drawn', data: normalizedData });
-        setActiveModal('card');
+        useGameStore.getState().setCardDrawData(normalizedData);
       });
     });
 
@@ -1030,7 +1030,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
 
     // ─── Disconnection ────────────────────────────────────────────────
     subscribe('player_disconnected', (data) => {
-      updatePlayer(data.player_id, { disconnected: true });
+      updatePlayer(data.player_id, { disconnected: true, is_connected: false });
       addLogEntry({
         type: 'move',
         message: `${data.player_name} disconnected`,

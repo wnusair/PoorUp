@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useGameStore } from '../../hooks/useGameState';
 import { formatExactMoney, formatMoney } from '../../utils/formatters';
+import HelpTooltip from '../Common/HelpTooltip';
 
 const TAB_OPTIONS = [
   { key: 'overview', label: 'Overview' },
@@ -35,27 +36,44 @@ const ROLE_SUMMARIES = {
   sympathizer: {
     current: 'Can contribute to the faction and build trust inside the network.',
     next: 'Promotion to organizer unlocks plot operations and regional orders.',
+    tooltip: 'Sympathizer: The entry-level role. Sympathizers cannot issue orders or coordinate actions, but they can make contributions to build up trust and eventually get promoted.',
   },
   organizer: {
     current: 'Can issue plot operations and coordinate regional work.',
     next: 'Promotion to committed member secures deeper faction authority.',
+    tooltip: 'Organizer: A seasoned member who can issue global and regional plot operations. Organizers can invite new members and fully commit to the plot.',
   },
   committed_member: {
     current: 'Can fully commit to the faction and hold stronger command weight.',
     next: 'Promotion to cadre improves succession priority and command standing.',
+    tooltip: 'Committed Member: A fully devoted operative. They hold stronger command weight and priority in the succession chain.',
   },
   cadre: {
     current: 'Provides top-tier command depth and succession strength.',
     next: 'This is the highest internal promotion tier.',
+    tooltip: 'Cadre: The elite command layer. They have the highest succession priority and deeply influence the command structure.',
   },
   founder: {
     current: 'Founded the faction and usually anchors command and succession.',
     next: 'Commitment progression strengthens long-term command authority.',
+    tooltip: 'Founder: The original creator of the plot. Usually anchors the entire command structure and has the ultimate authority unless replaced.',
   },
 };
 
 function formatRoleLabel(role) {
   return String(role || 'none').replaceAll('_', ' ');
+}
+
+function RoleBadge({ role }) {
+  const summary = ROLE_SUMMARIES[role];
+  const label = formatRoleLabel(role);
+  if (!summary) return label;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {label}
+      <HelpTooltip content={summary.tooltip} label={`${label} role info`} />
+    </span>
+  );
 }
 
 function getRoleSummary(entry) {
@@ -533,7 +551,9 @@ export default function PlotPanelModal({
                       </div>
                       <div>
                         <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Role</p>
-                        <p className="mt-1 text-sm font-semibold capitalize text-white">{(commandEntry?.role || me?.plot_role || 'none').replaceAll('_', ' ')}</p>
+                        <div className="mt-1 text-sm font-semibold capitalize text-white">
+                          <RoleBadge role={commandEntry?.role || me?.plot_role || 'none'} />
+                        </div>
                           <p className="mt-2 text-xs leading-5 text-slate-400">{getRoleSummary(commandEntry || { role: me?.plot_role }).current}</p>
                       </div>
                     </div>
@@ -626,7 +646,9 @@ export default function PlotPanelModal({
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="font-semibold text-white">{entry.username}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">{formatRoleLabel(entry.role)}</p>
+                          <div className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">
+                            <RoleBadge role={entry.role} />
+                          </div>
                           <p className="mt-2 text-xs leading-5 text-slate-400">{getRoleSummary(entry).current}</p>
                           <p className="mt-1 text-xs leading-5 text-slate-500">{getRoleSummary(entry).next}</p>
                           {getPromotionProgressLabel(entry) ? <p className="mt-1 text-xs leading-5 text-slate-500">{getPromotionProgressLabel(entry)}</p> : null}
@@ -845,7 +867,9 @@ export default function PlotPanelModal({
                   {(plot?.command_chain || []).filter((entry) => entry.role === 'sympathizer').map((entry) => (
                     <div key={entry.player_id} className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
                       <p className="font-semibold text-white">{entry.username}</p>
-                      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">{formatRoleLabel(entry.role)} to {formatRoleLabel(entry.next_role)}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1 text-xs uppercase tracking-[0.16em] text-slate-500">
+                        <RoleBadge role={entry.role} /> to <RoleBadge role={entry.next_role} />
+                      </div>
                       <p className="mt-2 text-xs leading-5 text-slate-400">{getRoleSummary(entry).current}</p>
                       <p className="mt-1 text-xs leading-5 text-slate-500">{getRoleSummary(entry).next}</p>
                       <p className={[

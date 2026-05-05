@@ -1572,7 +1572,10 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
         member = (plot.get("members") or {}).get(str(player_id)) or {}
         next_player["plot_role"] = member.get("role") if member.get("active", True) else None
         next_player["plot_join_round"] = member.get("joined_round")
-        next_player["plot_defection_cooldown_until"] = int(member.get("defection_cooldown_until", 0) or 0)
+        next_player["plot_defection_cooldown_until"] = max(
+            int(next_player.get("plot_defection_cooldown_until", 0) or 0),
+            int(member.get("defection_cooldown_until", 0) or 0),
+        )
         next_player["plot_support_contributed"] = _round(member.get("support_contributed", 0), 2)
         next_player["plot_supply_contributed"] = _round(member.get("supply_contributed", 0), 2)
         next_player["plot_can_found"] = bool(
@@ -1580,6 +1583,7 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
             and current_round >= 4
             and not next_player.get("is_bankrupt")
             and player_id != int(wealthiest_player_id or 0)
+            and int(next_player.get("plot_defection_cooldown_until", 0) or 0) < current_round
             and hardship.get("eligible")
             and not founding_lockout_reasons
         )

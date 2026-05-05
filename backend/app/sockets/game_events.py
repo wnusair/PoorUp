@@ -19,16 +19,20 @@ from app.models.policy import (
 from app.engine.game_loop import (
     broadcast_game_state_snapshot,
     check_bankruptcy,
+    clear_turn_timeout,
     declare_player_bankruptcy,
     end_turn,
     finalize_turn_resolution,
     load_game_state,
+    pause_game_for_reconnect,
     persist_game_state,
     process_turn,
     log_and_broadcast,
     handle_player_bankrupt,
     check_win_condition,
     release_player_from_jail,
+    resume_game_after_reconnect,
+    schedule_turn_timeout,
 )
 from app.engine.events import reset_auction_timer, start_auction, resolve_auction
 from app.engine.debt import (
@@ -90,7 +94,7 @@ def handle_connect(auth=None):
 
 @socketio.on("disconnect")
 def handle_disconnect():
-    """Handle player disconnect. Mark them as disconnected in game state."""
+    """Handle player disconnect. Mark them disconnected and pause their turn if needed."""
     user_id = session.get("user_id")
     if not user_id:
         return
@@ -117,6 +121,14 @@ def handle_disconnect():
             updated_players.append(p)
         gs = dict(gs)
         gs["players"] = updated_players
+        paused_current_turn = gs.get("current_player_id") == mp.id
+        if paused_current_turn:
+            gs = pause_game_for_reconnect(
+                gs,
+                mp.id,
+                message=f"{mp.user.username} disconnected. The game is paused until they rejoin.",
+            )
+            clear_turn_timeout(mp.match_id, redis_client)
 
         # Record disconnect round for influence decay
         redis_client.set(
@@ -126,57 +138,26 @@ def handle_disconnect():
 
         log_and_broadcast(
             gs, "move",
-            f"{mp.user.username} disconnected.",
+            (
+                f"{mp.user.username} disconnected. The game is paused until they rejoin."
+                if paused_current_turn
+                else f"{mp.user.username} disconnected."
+            ),
             mp.match_id, redis_client, socketio, player_id=mp.id,
         )
         persist_game_state(gs, mp.match_id, redis_client)
+        broadcast_game_state_snapshot(socketio, mp.match_id, gs)
 
     socketio.emit(
         "player_disconnected",
-        {"player_id": mp.id, "username": mp.user.username},
+        {
+            "player_id": mp.id,
+            "username": mp.user.username,
+            "player_name": mp.user.username,
+            "paused": bool(gs and gs.get("game_paused")),
+        },
         room=str(mp.match_id),
     )
-
-    # If it's this player's turn, schedule auto-resolve after 30 seconds
-    if gs and gs.get("current_player_id") == mp.id:
-        # Eventlet-based delayed auto-resolve
-        import eventlet
-        eventlet.spawn_after(
-            30,
-            _auto_resolve_turn,
-            current_app._get_current_object(),
-            mp.match_id,
-            mp.id,
-        )
-
-
-def _auto_resolve_turn(app, match_id: int, player_id: int):
-    """Auto-resolve a turn for a disconnected player after 30 seconds."""
-    with app.app_context():
-        gs = load_game_state(match_id, redis_client)
-        if not gs:
-            return
-
-        # Only proceed if it's still this player's turn
-        if gs.get("current_player_id") != player_id:
-            return
-
-        player = next((p for p in gs["players"] if p["id"] == player_id), None)
-        if not player or player.get("is_connected", True):
-            return
-
-        # Execute turn with minimal actions
-        try:
-            gs = process_turn(
-                match_id=match_id,
-                player_id=player_id,
-                game_state=gs,
-                redis_client=redis_client,
-                socketio_instance=socketio,
-            )
-            persist_game_state(gs, match_id, redis_client)
-        except Exception as e:
-            print(f"[AutoTurn] Error auto-resolving turn for player {player_id}: {e}")
 
 
 def _resolve_property_reference(game_state: dict, data: dict):
@@ -256,6 +237,7 @@ def handle_join_room(data):
         mp = MatchPlayer.query.filter_by(user_id=user_id, match_id=match.id).first()
 
         if mp:
+            was_disconnected = not mp.is_connected
             mp.is_connected = True
             db.session.commit()
 
@@ -263,11 +245,6 @@ def handle_join_room(data):
             if match.status == "active":
                 gs = load_game_state(match.id, redis_client)
                 if gs:
-                    emit("game_state_snapshot", {
-                        "state": gs,
-                        "your_player_id": mp.id,
-                    })
-
                     # Update connection status in game state
                     updated_players = []
                     for p in gs.get("players", []):
@@ -277,7 +254,27 @@ def handle_join_room(data):
                         updated_players.append(p)
                     gs = dict(gs)
                     gs["players"] = updated_players
+                    resumed_turn = gs.get("game_paused") and gs.get("current_player_id") == mp.id
+                    if resumed_turn:
+                        gs = resume_game_after_reconnect(gs, player_id=mp.id)
+                        gs = log_and_broadcast(
+                            gs,
+                            "move",
+                            f"{mp.user.username} reconnected. The turn timer resumed.",
+                            match.id,
+                            redis_client,
+                            socketio,
+                            player_id=mp.id,
+                        )
                     persist_game_state(gs, match.id, redis_client)
+                    if resumed_turn:
+                        schedule_turn_timeout(gs, match.id, redis_client, socketio)
+                    emit("game_state_snapshot", {
+                        "state": gs,
+                        "your_player_id": mp.id,
+                    })
+                    if was_disconnected:
+                        broadcast_game_state_snapshot(socketio, match.id, gs)
             elif match.status == "lobby":
                 from app.routes.lobby import _lobby_state
                 emit("lobby_update", _lobby_state(match))

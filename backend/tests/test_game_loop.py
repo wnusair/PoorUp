@@ -410,6 +410,101 @@ class GameStateSnapshotPreparationTests(unittest.TestCase):
             for event, payload, _room in socket.emits
         ))
 
+    def test_schedule_turn_timeout_clears_when_game_is_paused(self):
+        redis_client = FakeRedis()
+        socket = FakeSocket()
+        state = {
+            'status': 'active',
+            'current_round': 3,
+            'current_turn_index': 0,
+            'current_player_id': 1,
+            'game_paused': True,
+            'settings': {'turn_timer_enabled': True, 'turn_time_limit_seconds': 30},
+        }
+
+        game_loop.schedule_turn_timeout(state, 77, redis_client, socket)
+
+        self.assertEqual(socket.background_tasks, [])
+        self.assertEqual(redis_client.get(game_loop._turn_timeout_token_key(77)), '')
+        self.assertEqual(redis_client.get(game_loop._turn_timeout_deadline_key(77)), '')
+
+    def test_end_turn_pauses_when_next_player_is_disconnected(self):
+        redis_client = FakeRedis()
+        socket = FakeSocket()
+        state = {
+            'status': 'active',
+            'current_round': 3,
+            'current_turn_index': 0,
+            'turn_order': [1, 2],
+            'current_player_id': 1,
+            'awaiting_end_turn_player_id': 1,
+            'dice_rolled_this_turn': True,
+            'players': [
+                {'id': 1, 'username': 'Atlas', 'balance': 900.0, 'is_bankrupt': False, 'is_connected': True},
+                {'id': 2, 'username': 'Rival', 'balance': 900.0, 'is_bankrupt': False, 'is_connected': False},
+            ],
+            'properties': [],
+            'pending_debts': [],
+            'econ': {},
+            'settings': {
+                'welfare_system_enabled': False,
+                'lobbying_enabled': False,
+                'policy_voting_enabled': False,
+                'uprisings_enabled': False,
+                'turn_timer_enabled': True,
+                'turn_time_limit_seconds': 30,
+            },
+            'log_buffer': [],
+        }
+
+        next_state = game_loop.end_turn(
+            state,
+            1,
+            {'is_doubles': False},
+            77,
+            redis_client,
+            socket,
+            state['settings'],
+            state['econ'],
+            state['current_round'],
+        )
+
+        self.assertEqual(next_state['current_player_id'], 2)
+        self.assertTrue(next_state['game_paused'])
+        self.assertEqual(next_state['paused_player_id'], 2)
+        self.assertIn('paused until they rejoin', next_state['pause_message'])
+        self.assertFalse(any(event == 'turn_start' for event, _payload, _room in socket.emits))
+
+    def test_resume_game_after_reconnect_requires_player_connection(self):
+        paused_state = {
+            'status': 'active',
+            'game_paused': True,
+            'pause_reason': 'waiting_for_player_reconnect',
+            'pause_message': 'Waiting for Rival to reconnect.',
+            'paused_player_id': 2,
+            'players': [
+                {'id': 1, 'username': 'Atlas', 'is_connected': True},
+                {'id': 2, 'username': 'Rival', 'is_connected': False},
+            ],
+        }
+
+        still_paused = game_loop.resume_game_after_reconnect(paused_state, player_id=2)
+        self.assertTrue(still_paused['game_paused'])
+
+        reconnected_state = {
+            **paused_state,
+            'players': [
+                {'id': 1, 'username': 'Atlas', 'is_connected': True},
+                {'id': 2, 'username': 'Rival', 'is_connected': True},
+            ],
+        }
+        resumed = game_loop.resume_game_after_reconnect(reconnected_state, player_id=2)
+
+        self.assertFalse(resumed['game_paused'])
+        self.assertIsNone(resumed['pause_reason'])
+        self.assertIsNone(resumed['pause_message'])
+        self.assertIsNone(resumed['paused_player_id'])
+
 
 class GameLoopTaxLandingRegressionTests(unittest.TestCase):
     def _build_state(self, start_position):

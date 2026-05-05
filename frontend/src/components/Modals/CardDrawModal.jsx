@@ -9,11 +9,10 @@ const DECK_COLORS = {
   community_chest: { bg: 'bg-blue-500', text: 'text-white', label: 'COMMUNITY CHEST' },
 };
 
-export default function CardDrawModal() {
-  const { pendingAction, closeModal } = useGameStore();
+export default function CardDrawModal({ data, onClose }) {
   const [flipped, setFlipped] = useState(false);
 
-  const cardData = pendingAction?.data;
+  const cardData = data;
   const deckType = cardData?.card_type || cardData?.type || 'chance';
   const card = cardData?.card;
   const colors = DECK_COLORS[deckType] || DECK_COLORS.chance;
@@ -27,17 +26,17 @@ export default function CardDrawModal() {
   // Auto-close after 4 seconds
   useEffect(() => {
     if (!flipped) return;
-    const t = setTimeout(() => closeModal(), 4000);
+    const t = setTimeout(() => onClose(), 4000);
     return () => clearTimeout(t);
-  }, [flipped, closeModal]);
+  }, [flipped, onClose]);
 
   if (!card) return null;
 
   return (
-    <div className="modal-overlay" onClick={closeModal}>
+    <div className="modal-overlay" onClick={onClose}>
       <div
         className="modal-panel max-w-sm text-center cursor-pointer"
-        onClick={e => { e.stopPropagation(); closeModal(); }}
+        onClick={e => { e.stopPropagation(); onClose(); }}
         style={{ perspective: '1000px' }}
       >
         <div

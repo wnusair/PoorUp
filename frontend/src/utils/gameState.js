@@ -267,11 +267,14 @@ export function normalizeEconomy(economy = {}, gameState = {}) {
 
 
 export function normalizePlayer(player = {}) {
+  const isConnected = player.is_connected ?? !(player.disconnected ?? false);
   return {
     ...player,
     position: normalizeBoardPosition(player.current_position ?? player.position ?? 0),
     current_position: normalizeBoardPosition(player.current_position ?? player.position ?? 0),
     bankrupt: player.is_bankrupt ?? player.bankrupt ?? false,
+    disconnected: !Boolean(isConnected),
+    is_connected: Boolean(isConnected),
     in_jail: player.is_jailed ?? player.in_jail ?? false,
     jail_cards: player.has_jail_card ? 1 : (player.jail_cards ?? 0),
     plot_role: player.plot_role ?? null,

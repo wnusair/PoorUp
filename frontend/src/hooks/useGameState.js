@@ -162,6 +162,7 @@ export const useGameStore = create(
   // UI state
   pendingAction: null, // { type: 'buy_property' | 'card_drawn' | 'auction' | ... , data: {} }
   activeModal: null,   // which modal is open
+  cardDrawData: null,
   diceResult: null,    // { die1, die2, total }
   diceRolledThisTurn: false,
   isRolling: false,
@@ -176,6 +177,10 @@ export const useGameStore = create(
   modalQueue: [],
   tradeDealDrafts: [],
   awaitingEndTurnPlayerId: null,
+  gamePaused: false,
+  pauseReason: null,
+  pauseMessage: null,
+  pausedPlayerId: null,
 
   // Movement animation
   playerAnimPositions: {}, // playerId → current animated board position
@@ -231,6 +236,9 @@ export const useGameStore = create(
 
   setPendingAction: (action) => set({ pendingAction: action }),
   clearPendingAction: () => set({ pendingAction: null }),
+
+  setCardDrawData: (data) => set({ cardDrawData: data }),
+  clearCardDrawData: () => set({ cardDrawData: null }),
 
   setActiveModal: (modal) => set({ activeModal: modal }),
   enqueueModal: (modal, entityId = null) =>
@@ -413,6 +421,18 @@ export const useGameStore = create(
     tradeDealDrafts: state.tradeDealDrafts.filter((draft) => draft.id !== draftId),
   })),
   setAwaitingEndTurnPlayerId: (playerId) => set({ awaitingEndTurnPlayerId: playerId }),
+  setPauseState: (pauseState = {}) => set({
+    gamePaused: Boolean(pauseState.game_paused ?? pauseState.active ?? false),
+    pauseReason: pauseState.pause_reason ?? pauseState.reason ?? null,
+    pauseMessage: pauseState.pause_message ?? pauseState.message ?? null,
+    pausedPlayerId: pauseState.paused_player_id == null ? null : pauseState.paused_player_id,
+  }),
+  clearPauseState: () => set({
+    gamePaused: false,
+    pauseReason: null,
+    pauseMessage: null,
+    pausedPlayerId: null,
+  }),
 
   setLobbyData: (data) => set({ lobbyData: data }),
   setSettings: (settings) => set({ settings }),

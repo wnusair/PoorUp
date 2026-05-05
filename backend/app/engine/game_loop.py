@@ -431,6 +431,10 @@ def initialize_game_state(match, match_players, redis_client, socketio_instance)
         ),
         "lobbying_stats": initialize_lobbying_stats(player_states, seeded_policies, gov_type),
         "pending_debts": [],
+        "game_paused": False,
+        "pause_reason": None,
+        "pause_message": None,
+        "paused_player_id": None,
     }
     game_state = initialize_player_finance_history(game_state)
     game_state = ensure_social_state(game_state)
@@ -482,6 +486,81 @@ def _turn_timeout_deadline_key(match_id: int) -> str:
     return f"game:{match_id}:turn_timeout:deadline"
 
 
+def pause_game_for_reconnect(
+    game_state: dict,
+    player_id: int,
+    *,
+    reason: str = "waiting_for_player_reconnect",
+    message: str | None = None,
+) -> dict:
+    next_state = dict(game_state)
+    if next_state.get("status") == "completed":
+        return next_state
+
+    next_state["game_paused"] = True
+    next_state["pause_reason"] = reason
+    next_state["pause_message"] = message
+    next_state["paused_player_id"] = int(player_id or 0) or None
+    return next_state
+
+
+def resume_game_after_reconnect(game_state: dict, *, player_id: int | None = None) -> dict:
+    next_state = dict(game_state)
+    if not next_state.get("game_paused"):
+        return next_state
+
+    paused_player_id = int(next_state.get("paused_player_id") or 0) or None
+    if player_id is not None and paused_player_id not in {None, int(player_id or 0) or None}:
+        return next_state
+    if paused_player_id is not None:
+        paused_player = next(
+            (entry for entry in next_state.get("players", []) if int(entry.get("id") or 0) == paused_player_id),
+            None,
+        )
+        if paused_player is not None and not paused_player.get("is_connected", True):
+            return next_state
+
+    next_state["game_paused"] = False
+    next_state["pause_reason"] = None
+    next_state["pause_message"] = None
+    next_state["paused_player_id"] = None
+    return next_state
+
+
+def _pause_turn_for_disconnected_player(
+    game_state: dict,
+    player_id: int,
+    match_id: int,
+    redis_client,
+    socketio_instance,
+) -> dict:
+    paused_player = next((entry for entry in game_state.get("players", []) if entry.get("id") == player_id), None) or {}
+    description = (
+        f"{paused_player.get('username', 'Player')} is disconnected. "
+        "The game is paused until they rejoin."
+    )
+    next_state = pause_game_for_reconnect(game_state, player_id, message=description)
+    next_state = _add_log_entry(
+        next_state,
+        {
+            "event_type": "turn_paused",
+            "description": description,
+            "player_id": player_id,
+            "round": next_state.get("current_round", 1),
+            "turn": next_state.get("current_turn_index", 0),
+        },
+        match_id,
+        redis_client,
+    )
+    clear_turn_timeout(match_id, redis_client)
+    socketio_instance.emit(
+        "log_entry",
+        {"match_id": match_id, "log": next_state.get("log_buffer", [])[-10:]},
+        room=str(match_id),
+    )
+    return next_state
+
+
 def _turn_timeout_marker(game_state: dict) -> str:
     return ":".join(
         [
@@ -518,7 +597,7 @@ def clear_turn_timeout(match_id: int, redis_client) -> None:
 
 
 def schedule_turn_timeout(game_state: dict, match_id: int, redis_client, socketio_instance) -> None:
-    if game_state.get("status") != "active" or game_state.get("current_player_id") is None:
+    if game_state.get("status") != "active" or game_state.get("current_player_id") is None or game_state.get("game_paused"):
         clear_turn_timeout(match_id, redis_client)
         return
 
@@ -1356,6 +1435,8 @@ def run_turn(
     game_state = load_game_state(match_id, redis_client)
     if game_state is None:
         raise ValueError(f"No game state found for match {match_id}")
+    if game_state.get("game_paused"):
+        return game_state
 
     settings = game_state.get("settings", DEFAULT_SETTINGS)
     econ = game_state.get("econ", {})
@@ -1616,6 +1697,20 @@ def finalize_turn_resolution(
     game_state.pop("pending_turn_context", None)
 
     resolved_player = next((p for p in game_state.get("players", []) if p["id"] == player_id), None)
+    if game_state.get("status") != "completed" and resolved_player is not None and not resolved_player.get("is_connected", True):
+        game_state = pause_game_for_reconnect(
+            game_state,
+            player_id,
+            message=(
+                f"{resolved_player.get('username', 'Player')} disconnected during their turn. "
+                "The game is paused until they rejoin."
+            ),
+        )
+        clear_turn_timeout(match_id, redis_client)
+        persist_game_state(game_state, match_id, redis_client)
+        broadcast_game_state_snapshot(socketio_instance, match_id, game_state)
+        return game_state
+
     player_in_debt = (
         resolved_player is not None
         and (
@@ -1676,6 +1771,8 @@ def end_turn(
         game_state["current_player_id"] = player_id
         redis_client.set(f"game:{match_id}:current_turn", str(player_id))
         next_player = next((p for p in game_state.get("players", []) if p["id"] == player_id), None)
+        if next_player is not None and not next_player.get("is_connected", True) and not next_player.get("is_bankrupt", False):
+            return _pause_turn_for_disconnected_player(game_state, player_id, match_id, redis_client, socketio_instance)
         socketio_instance.emit(
             "turn_start",
             {
@@ -1805,6 +1902,9 @@ def end_turn(
     redis_client.set(f"game:{match_id}:current_turn", str(next_player_id))
 
     next_player = next((p for p in game_state.get("players", []) if p["id"] == next_player_id), None)
+    if next_player is not None and not next_player.get("is_connected", True) and not next_player.get("is_bankrupt", False):
+        return _pause_turn_for_disconnected_player(game_state, next_player_id, match_id, redis_client, socketio_instance)
+
     socketio_instance.emit(
         "turn_start",
         {

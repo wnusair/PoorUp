@@ -34,9 +34,11 @@ export default function GameLayout({ socketActions, myPlayerId }) {
     activeModal,
     uprisingEvent,
     pendingAction,
+    cardDrawData,
     setMatchId,
     setActiveModal,
     closeModal,
+    clearCardDrawData,
     setLogEntries,
     players,
     properties,
@@ -154,10 +156,10 @@ export default function GameLayout({ socketActions, myPlayerId }) {
           onClose={() => setSelectedSpace(null)}
         />
       )}
-      {activeModal === 'card' && (
+      {cardDrawData && (
         <CardDrawModal
-          data={pendingAction?.data}
-          onClose={closeModal}
+          data={cardDrawData}
+          onClose={clearCardDrawData}
         />
       )}
       {activeModal === 'auction' && (

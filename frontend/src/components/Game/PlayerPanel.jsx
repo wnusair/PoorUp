@@ -75,6 +75,9 @@ function PlayerRow({ player, isMe, isCurrent, properties, deals, isHost }) {
             {player.bankrupt && (
               <span className="text-xs bg-red-900 text-red-300 px-1 rounded">BANKRUPT</span>
             )}
+            {player.disconnected && !player.bankrupt && (
+              <span className="text-xs bg-amber-900 text-amber-200 px-1 rounded">DISCONNECTED</span>
+            )}
             {player.in_jail && (
               <span className="text-xs bg-orange-900 text-orange-300 px-1 rounded">JAIL</span>
             )}

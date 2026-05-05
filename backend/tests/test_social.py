@@ -788,6 +788,28 @@ class SocialEngineTests(unittest.TestCase):
         self.assertEqual(founder_after_leave['balance'], 320.0)
         self.assertIsNone(founder_after_leave['plot_role'])
 
+    def test_plot_leave_applies_refounding_cooldown(self):
+        founder = make_player(1, 'Atlas', 320)
+        rival = make_player(2, 'Rival', 900)
+        broker = make_player(3, 'Broker', 1100)
+        state = make_state(
+            [founder, rival, broker],
+            [
+                make_property(1, 1, board_position=2, base_price=100, dev_level=0),
+                make_property(2, 2, board_position=4, base_price=180, dev_level=2),
+                make_property(3, 3, board_position=9, base_price=220, dev_level=2),
+            ],
+        )
+        state['current_round'] = 5
+
+        founded_state, _ = start_communist_plot(ensure_social_state(state), player_id=1)
+        left_state, _ = submit_plot_leave(founded_state, player_id=1)
+        cooled_state = ensure_social_state(left_state)
+        founder_after_leave = next(player for player in cooled_state['players'] if player['id'] == 1)
+
+        self.assertGreater(founder_after_leave['plot_defection_cooldown_until'], cooled_state['current_round'])
+        self.assertFalse(founder_after_leave['plot_can_found'])
+
     def test_plot_member_can_request_join_and_commander_can_accept(self):
         founder = make_player(1, 'Atlas', 90)
         applicant = make_player(2, 'Rival', 400)

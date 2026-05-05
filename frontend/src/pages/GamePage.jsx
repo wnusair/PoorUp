@@ -31,6 +31,7 @@ export default function GamePage() {
     setCurrentPlayerId,
     setSettings,
     setAwaitingEndTurnPlayerId,
+    setPauseState,
     setPendingAction,
     clearPendingAction,
     setActiveModal,
@@ -76,6 +77,7 @@ export default function GamePage() {
         }
 
         setAwaitingEndTurnPlayerId(gs.awaiting_end_turn_player_id ?? null);
+        setPauseState(gs);
 
         if (gs.dice_rolled_this_turn != null) {
           const diceRolled = Boolean(gs.dice_rolled_this_turn);

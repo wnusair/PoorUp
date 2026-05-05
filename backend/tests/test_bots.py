@@ -573,6 +573,39 @@ class BotStrategyTests(unittest.TestCase):
         self.assertEqual(action['type'], 'plot_action')
         self.assertEqual(action['action_type'], 'stockpile_supply')
 
+    def test_bot_holds_for_coordinated_seizure_wave_before_spending_on_single_target(self):
+        player = make_player(1, 'Atlas', 500)
+        player.update({'plot_role': 'committed_member'})
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        state = make_state([player, rival], [], government_type='social_democracy', round_number=7)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'stage': 3,
+                'support': 8.0,
+                'supply': 4.0,
+                'member_ids': [1],
+                'committed_member_ids': [1],
+                'regions': {
+                    'Western Europe': {'hardship_pressure': 4, 'seeded_cells': 2},
+                },
+                'legal_targets': [
+                    {'property_id': 24, 'preview_score': 15, 'agitation': 3, 'adjacent_to_control': True, 'region': 'Western Europe'},
+                    {'property_id': 23, 'preview_score': 13, 'agitation': 2, 'adjacent_to_control': True, 'region': 'Western Europe'},
+                ],
+                'seized_properties': [],
+                'seized_property_ids': [11],
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action['type'], 'plot_action')
+        self.assertEqual(action['action_type'], 'stockpile_supply')
+        self.assertEqual(action['reason'], 'prepare_coordinated_seizure_wave')
+
     def test_bot_accepts_plot_invite_before_other_management_actions(self):
         player = make_player(1, 'Atlas', 400)
         player.update({
@@ -713,6 +746,41 @@ class BotStrategyTests(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual(action['type'], 'plot_leave')
+
+    def test_plot_founder_does_not_abandon_early_plot_without_overwhelming_private_win(self):
+        player = make_player(1, 'Atlas', 700)
+        player.update({'plot_role': 'founder'})
+        rival = make_player(2, 'Rival', 1200, is_bot=False)
+        properties = [
+            make_property(21, 'Red One', '#EAB308', 220, owner_id=1, board_position=21, dev_level=2),
+            make_property(22, 'Red Two', '#EAB308', 220, owner_id=1, board_position=22, dev_level=1),
+            make_property(23, 'Red Three', '#EAB308', 240, owner_id=1, board_position=23, dev_level=1),
+        ]
+        state = make_state([player, rival], properties, government_type='social_democracy', round_number=6)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': False,
+                'stage': 2,
+                'support': 8.0,
+                'supply': 1.0,
+                'member_ids': [1],
+                'committed_member_ids': [1],
+                'commander_id': 1,
+                'regions': {
+                    'Western Europe': {'hardship_pressure': 2, 'seeded_cells': 2},
+                },
+                'legal_targets': [],
+                'victory_countdown': {'active': False, 'countdown_eligible': False},
+            },
+        }
+
+        action = bots.choose_management_action(player, state, self.profile(state['settings']))
+
+        self.assertIsNotNone(action)
+        self.assertNotEqual(action['type'], 'plot_leave')
+        self.assertEqual(action['type'], 'plot_action')
+        self.assertEqual(action['action_type'], 'stockpile_supply')
 
     def test_plot_commander_accepts_pending_join_request(self):
         player = make_player(1, 'Atlas', 220)

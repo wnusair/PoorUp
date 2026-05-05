@@ -587,7 +587,7 @@ def _queue_bot_state_evaluation(
     replace_existing: bool = True,
 ) -> None:
     game_state = game_state or load_game_state(match_id, redis_client)
-    if not game_state or game_state.get("status") != "active":
+    if not game_state or game_state.get("status") != "active" or game_state.get("game_paused"):
         return
     auction_active = has_active_auction(match_id)
 
@@ -647,7 +647,7 @@ def _run_debounced_state_evaluation(app_obj, redis_key: str, token: str, match_i
 
 def queue_bot_state_evaluation(match_id: int, game_state: dict | None = None, reason: str = "state_update") -> None:
     active_state = game_state or load_game_state(match_id, redis_client)
-    if not active_state or active_state.get("status") != "active":
+    if not active_state or active_state.get("status") != "active" or active_state.get("game_paused"):
         return
 
     redis_key = _bot_state_evaluation_key(match_id)
@@ -2654,6 +2654,52 @@ def _plot_near_victory(plot: dict) -> bool:
     )
 
 
+def _plot_primary_seizure_targets(plot: dict) -> list[dict[str, Any]]:
+    legal_targets = [
+        entry
+        for entry in (plot.get("legal_targets") or [])
+        if entry.get("property_id") is not None
+    ]
+    if not legal_targets:
+        return []
+
+    region_sizes: dict[str, int] = {}
+    for entry in legal_targets:
+        region_name = str(entry.get("region") or "")
+        region_sizes[region_name] = region_sizes.get(region_name, 0) + 1
+
+    return sorted(
+        legal_targets,
+        key=lambda entry: (
+            bool(entry.get("adjacent_to_control")),
+            region_sizes.get(str(entry.get("region") or ""), 0),
+            float(entry.get("preview_score", 0) or 0),
+            float(entry.get("agitation", 0) or 0),
+        ),
+        reverse=True,
+    )
+
+
+def _plot_coordination_targets(plot: dict, prioritized_targets: list[dict[str, Any]]) -> int:
+    if int(plot.get("stage", 0) or 0) < 3:
+        return 1
+    if len(prioritized_targets) < 2:
+        return 1
+    if len(plot.get("seized_property_ids") or []) >= 4 or int(plot.get("stage", 0) or 0) >= 4:
+        return 1
+    return 2
+
+
+def _plot_should_hold_for_coordinated_push(plot: dict, prioritized_targets: list[dict[str, Any]]) -> bool:
+    required_targets = _plot_coordination_targets(plot, prioritized_targets)
+    if required_targets <= 1:
+        return False
+
+    support = float(plot.get("support", 0) or 0)
+    supply = float(plot.get("supply", 0) or 0)
+    return support < (6 * required_targets) or supply < (4 * required_targets)
+
+
 def _plot_private_win_signal(player: dict, game_state: dict) -> dict[str, float | int | bool]:
     player_id = int(player.get("id") or 0)
     owned_properties = []
@@ -2792,6 +2838,10 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     request_pending = bool((plot.get("join_requests") or {}).get(str(player_id)))
     defection_cooldown_until = int(player.get("plot_defection_cooldown_until", 0) or 0)
     plot_role = str(player.get("plot_role") or "")
+    command_entry = next(
+        (entry for entry in (plot.get("command_chain") or []) if int(entry.get("player_id") or 0) == player_id),
+        {},
+    )
     total_seeded_cells = _plot_total_seeded_cells(plot)
     private_win_signal = _plot_private_win_signal(player, game_state)
     strong_private_path = bool(private_win_signal.get("strong_private_path"))
@@ -2806,11 +2856,7 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         ),
         reverse=True,
     )
-    legal_targets = sorted(
-        [entry for entry in (plot.get("legal_targets") or []) if entry.get("property_id") is not None],
-        key=lambda entry: (float(entry.get("preview_score", 0) or 0), float(entry.get("agitation", 0) or 0)),
-        reverse=True,
-    )
+    legal_targets = _plot_primary_seizure_targets(plot)
     recruitable_players = sorted(
         [entry for entry in (plot.get("recruitable_players") or []) if int(entry.get("player_id") or 0) != player_id],
         key=lambda entry: (
@@ -2844,6 +2890,21 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         for region_name in region_order
         if int(((plot.get("regions") or {}).get(region_name) or {}).get("seeded_cells", 0) or 0) <= 0
     ]
+    coordinated_push_target_count = _plot_coordination_targets(plot, legal_targets)
+    coordinated_push_ready = not _plot_should_hold_for_coordinated_push(plot, legal_targets)
+    overwhelming_private_path = bool(
+        int(private_win_signal.get("monopoly_count", 0) or 0) >= 2
+        or (
+            int(private_win_signal.get("monopoly_count", 0) or 0) >= 1
+            and int(private_win_signal.get("total_development", 0) or 0) >= 4
+        )
+        or (
+            int(private_win_signal.get("monopoly_count", 0) or 0) >= 1
+            and int(private_win_signal.get("total_development", 0) or 0) >= 5
+            and float(private_win_signal.get("net_worth", 0) or 0)
+            >= float(private_win_signal.get("median_net_worth", 0) or 0) * 1.35
+        )
+    )
 
     if player_id not in member_ids:
         if invite_pending and current_round > defection_cooldown_until:
@@ -2864,13 +2925,24 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             }
         return None
 
-    if strong_private_path and not plot_close_to_victory:
+    if (
+        strong_private_path
+        and overwhelming_private_path
+        and not plot_close_to_victory
+        and player_id != commander_id
+        and plot_role != "founder"
+    ):
         return {"type": "plot_leave", "reason": "protect_private_win_path"}
 
     if plot_role == "sympathizer":
-        contribution_round_target = 4 if hardship_triggers < 2 else 2
         contribution_cost = 100.0 if hardship_triggers < 2 else 50.0
-        if current_round > int(player.get("plot_join_round", current_round) or current_round) and float(player.get("plot_support_contributed", 0) or 0) < contribution_round_target and balance >= contribution_cost:
+        contribution_round_count = int(command_entry.get("contribution_round_count", 0) or 0)
+        required_contribution_rounds = max(1, int(command_entry.get("required_contribution_rounds", 2) or 2))
+        if (
+            current_round > int(player.get("plot_join_round", current_round) or current_round)
+            and contribution_round_count < required_contribution_rounds
+            and balance >= contribution_cost
+        ):
             return {
                 "type": "plot_join",
                 "intent": "contribute",
@@ -2938,6 +3010,28 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             "reason": "reach_seizure_supply_threshold",
         }
 
+    if (
+        player_id in committed_member_ids
+        and int(plot.get("stage", 0) or 0) >= 3
+        and len(legal_targets) >= coordinated_push_target_count
+        and coordinated_push_target_count > 1
+        and not coordinated_push_ready
+    ):
+        if float(plot.get("supply", 0) or 0) < (4 * coordinated_push_target_count) and float(plot.get("support", 0) or 0) >= 2:
+            return {
+                "type": "plot_action",
+                "action_type": "stockpile_supply",
+                "region": region_order[0] if region_order else None,
+                "reason": "prepare_coordinated_seizure_wave",
+            }
+        if region_order and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("heat", 0) or 0) <= 70:
+            return {
+                "type": "plot_action",
+                "action_type": "mutual_aid",
+                "region": region_order[0],
+                "reason": "build_support_for_coordinated_seizure_wave",
+            }
+
     if int(plot.get("stage", 0) or 0) >= 4 and clusters and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("supply", 0) or 0) >= 4:
         shallow_cluster = next((entry for entry in clusters if float(entry.get("avg_entrenchment", 0) or 0) < 2.4), None)
         if shallow_cluster is not None:
@@ -2948,7 +3042,7 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
                 "reason": "stabilize_existing_territory",
             }
 
-    if player_id in committed_member_ids and int(plot.get("stage", 0) or 0) >= 3 and legal_targets and float(plot.get("support", 0) or 0) >= 6 and float(plot.get("supply", 0) or 0) >= 4:
+    if player_id in committed_member_ids and int(plot.get("stage", 0) or 0) >= 3 and legal_targets and float(plot.get("support", 0) or 0) >= 6 and float(plot.get("supply", 0) or 0) >= 4 and coordinated_push_ready:
         return {
             "type": "plot_action",
             "action_type": "attempt_seizure",
@@ -3822,7 +3916,7 @@ def _execute_take_turn(match_id: int, player_id: int) -> None:
     attempted_liquidations: set[tuple[tuple[str, Any], ...]] = set()
     while True:
         game_state = load_game_state(match_id, redis_client)
-        if not game_state or game_state.get("status") != "active":
+        if not game_state or game_state.get("status") != "active" or game_state.get("game_paused"):
             return
         if game_state.get("current_player_id") != player_id or game_state.get("dice_rolled_this_turn", False):
             return
@@ -3847,7 +3941,7 @@ def _execute_take_turn(match_id: int, player_id: int) -> None:
             return
 
     game_state = load_game_state(match_id, redis_client)
-    if not game_state or game_state.get("status") != "active":
+    if not game_state or game_state.get("status") != "active" or game_state.get("game_paused"):
         return
     if game_state.get("current_player_id") != player_id or game_state.get("dice_rolled_this_turn", False):
         return
@@ -3889,7 +3983,7 @@ def _execute_manage_turn(match_id: int, player_id: int) -> None:
     attempted_actions: set[tuple[tuple[str, Any], ...]] = set()
     for _ in range(4):
         game_state = load_game_state(match_id, redis_client)
-        if not game_state or game_state.get("awaiting_end_turn_player_id") != player_id:
+        if not game_state or game_state.get("game_paused") or game_state.get("awaiting_end_turn_player_id") != player_id:
             return
 
         profile = ensure_bot_profile(match_player, game_state.get("settings", {}))
@@ -3910,7 +4004,7 @@ def _execute_manage_turn(match_id: int, player_id: int) -> None:
             return
 
     game_state = load_game_state(match_id, redis_client)
-    if not game_state or game_state.get("awaiting_end_turn_player_id") != player_id:
+    if not game_state or game_state.get("game_paused") or game_state.get("awaiting_end_turn_player_id") != player_id:
         return
 
     player = next((entry for entry in game_state.get("players", []) if entry.get("id") == player_id), None)
