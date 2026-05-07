@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import HelpTooltip from '../Common/HelpTooltip';
 import { useGameStore } from '../../hooks/useGameState';
 import { formatExactMoney, formatMoney } from '../../utils/formatters';
-import { getActivePlayerCount, getEffectiveBuildLoanMaxPayout } from '../../utils/deals';
 import { getGrievanceLabel, getIncidentLabel } from '../../utils/socialCopy';
 import {
   calculateDevelopmentCost,
@@ -170,6 +169,8 @@ export default function PropertyModal({
 
   const me = players.find((player) => player.id === myPlayerId) || null;
   const owner = property?.owner_id ? players.find((player) => player.id === property.owner_id) : null;
+  const corporations = economy?.corporations?.by_id || economy?.corporations?.entities || {};
+  const corporateOwner = property?.corporate_owner_id ? corporations[String(property.corporate_owner_id)] : null;
   const isMyTurn = currentPlayerId === myPlayerId;
   const isOwnedByMe = property?.owner_id === myPlayerId;
   const socialRestrictionReason = property.social_unionized
@@ -178,6 +179,15 @@ export default function PropertyModal({
   const isPromptForMe = actionData?.player_id === myPlayerId
     && property
     && (actionData?.property_id === property.id || actionData?.position === property.board_position);
+  const isCorporatePrompt = (pendingAction?.type || actionData?.type) === 'buy_corporate_property';
+  const corporateBuyoutPrice = Number(property?.corporate_listing_price || property?.current_value || property?.base_price || 0);
+  const canSubmitCorporateBuyout = Boolean(
+    isCorporatePrompt
+    && corporateOwner
+    && property?.corporate_owner_id
+    && !property?.owner_id
+    && Number(me?.balance || 0) >= corporateBuyoutPrice,
+  );
 
   useEffect(() => {
     if (!isPromptForMe) return undefined;
@@ -338,6 +348,8 @@ export default function PropertyModal({
   const title = isPromptForMe ? 'Property Decision' : 'Property Details';
   const statusText = property.social_unionized
     ? 'Controlled by the Proletariat Union'
+    : corporateOwner
+    ? `Listed by ${corporateOwner.name || corporateOwner.stock_symbol || 'a corporation'}`
     : property.is_mortgaged
     ? 'Mortgaged'
     : owner
@@ -345,13 +357,6 @@ export default function PropertyModal({
       : 'Unowned';
   const governmentType = normalizeGovernmentType(economy?.gov_type || economy?.government_type || 'liberal_democracy');
   const isLiberalDemocracy = governmentType === 'liberal_democracy';
-  const marketConfidence = Number(economy?.market_confidence || 0);
-  const capitalYieldRate = Number(economy?.capital_yield_rate || 0);
-  const capitalYieldReserveFloor = Math.max(0, Number(economy?.capital_yield_reserve_floor || 200));
-  const privateEquityBonus = Math.max(1, Number(economy?.private_equity_bonus_multiplier || 1));
-  const buildLoanBonusPercent = Math.max(0, (privateEquityBonus - 1) * 100);
-  const activePlayerCount = getActivePlayerCount(players);
-  const headsUpBuildLoanBonusPercent = Math.max(0, ((activePlayerCount === 2 ? 1.1 : 1) - 1) * 100);
 
   return (
     <div className="modal-overlay">
@@ -543,6 +548,17 @@ export default function PropertyModal({
                   )}
                 </div>
               )}
+              {isLiberalDemocracy && corporateOwner && (
+                <div className="rounded-lg border border-cyan-900/60 bg-cyan-950/30 p-3 text-sm text-cyan-100">
+                  <p className="font-semibold uppercase tracking-wide text-cyan-200">Corporate Listing</p>
+                  <p className="mt-1 text-xs text-cyan-100/80">
+                    {corporateOwner.name || corporateOwner.stock_symbol} is holding this property. Buyout price: {formatMoney(property.corporate_listing_price || property.current_value || property.base_price)}.
+                  </p>
+                  <p className="mt-1 text-xs text-cyan-100/70">
+                    Corporate rent if you decline: {formatExactMoney(property.corporate_rent || currentRent)}.
+                  </p>
+                </div>
+              )}
             </div>
 
             {hasPlotTab && (
@@ -579,44 +595,6 @@ export default function PropertyModal({
                   <p className="mt-1 text-sm text-emerald-100/80">This property has an active deal attached to it.</p>
                 </div>
 
-                {isLiberalDemocracy && (dealInvestmentOptions.length > 0 || dealProfitObligations.length > 0) && (
-                  <div className="rounded-lg border border-cyan-900/60 bg-cyan-950/20 p-3 text-xs text-cyan-100">
-                    <div className="flex items-center gap-2">
-                      <p className="font-semibold uppercase tracking-[0.18em] text-cyan-300">This Round's Cash Rules</p>
-                      <HelpTooltip
-                        label="Cash rules help"
-                        content={`Investor Mood changes cash bonuses and build loan returns. Cash Bonus pays on money you keep above ${formatMoney(capitalYieldReserveFloor)}. Build Loan Bonus raises the payback cap on build loans.${activePlayerCount === 2 ? ` A 1v1 bonus is also active, adding another ${headsUpBuildLoanBonusPercent.toFixed(0)}%.` : ''}`}
-                      />
-                    </div>
-                    <div className="mt-3 space-y-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="inline-flex items-center gap-1 text-cyan-100/80">
-                          <span>Investor Mood</span>
-                          <HelpTooltip content="Higher Investor Mood increases cash bonuses and build loan payback caps." label="Investor Mood help" />
-                        </span>
-                        <span className="font-mono text-cyan-50">{marketConfidence.toFixed(1)}/100</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="inline-flex items-center gap-1 text-cyan-100/80">
-                          <span>Cash Bonus</span>
-                          <HelpTooltip content={`At round end, cash kept above ${formatMoney(capitalYieldReserveFloor)} earns this bonus.`} label="Cash Bonus help" />
-                        </span>
-                        <span className="font-mono text-cyan-50">{(capitalYieldRate * 100).toFixed(2)}%</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="inline-flex items-center gap-1 text-cyan-100/80">
-                          <span>Build Loan Bonus</span>
-                          <HelpTooltip content="This increases the maximum total payback on build loans this round." label="Build Loan Bonus help" />
-                        </span>
-                        <span className="font-mono text-cyan-50">+{buildLoanBonusPercent.toFixed(0)}%</span>
-                      </div>
-                    </div>
-                    {activePlayerCount === 2 && (
-                      <p className="mt-2 text-cyan-100/70">1v1 bonus active: build loans can pay back another {headsUpBuildLoanBonusPercent.toFixed(0)}% because you are funding your only rival.</p>
-                    )}
-                  </div>
-                )}
-
                 {dealModifiers.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-200">Rent Modifiers</p>
@@ -641,9 +619,6 @@ export default function PropertyModal({
                       <div key={`${option.deal_id}-${option.clause_id}`} className="rounded-lg border border-emerald-800/60 bg-gray-900/60 px-3 py-2 text-sm text-emerald-50">
                         <p>Build money left: {formatMoney(option.escrow_remaining)}</p>
                         <p className="mt-1 text-xs text-emerald-100/70">The lender takes {Math.round(Number(option.profit_share_percent || 0) * 100)}% of rent from the funded upgrades until {formatMoney(option.max_payout)} is repaid.</p>
-                        {isLiberalDemocracy && (
-                          <p className="mt-1 text-xs text-cyan-100/70">Current max payback: {formatMoney(getEffectiveBuildLoanMaxPayout(Number(option.max_payout || 0), privateEquityBonus, activePlayerCount))}</p>
-                        )}
                       </div>
                     ))}
                   </div>
@@ -661,9 +636,6 @@ export default function PropertyModal({
                       <div key={`${obligation.deal_id}-${obligation.tranche_id}`} className="rounded-lg border border-emerald-800/60 bg-gray-900/60 px-3 py-2 text-sm text-emerald-50">
                         <p>{Math.round(Number(obligation.profit_share_percent || 0) * 100)}% of rent from the funded upgrades still goes back to the lender.</p>
                         <p className="mt-1 text-xs text-emerald-100/70">Paid back so far: {formatMoney(obligation.payout_to_date)} / {formatMoney(obligation.max_payout)}</p>
-                        {isLiberalDemocracy && (
-                          <p className="mt-1 text-xs text-cyan-100/70">Current max payback: {formatMoney(getEffectiveBuildLoanMaxPayout(Number(obligation.max_payout || 0), privateEquityBonus, activePlayerCount))}</p>
-                        )}
                       </div>
                     ))}
                   </div>
@@ -777,7 +749,9 @@ export default function PropertyModal({
               <p className="text-sm text-gray-400 text-center xl:text-left">
                 {owner
                   ? `${owner.username} currently controls this property.`
-                  : 'You can inspect this property here, and buy it when you land on it.'}
+                  : corporateOwner
+                    ? `${corporateOwner.name || corporateOwner.stock_symbol || 'A corporation'} controls this land. Corporate spaces are not normal unowned purchases.`
+                    : 'You can inspect this property here, and buy it when you land on it.'}
               </p>
             )}
 
@@ -947,8 +921,13 @@ export default function PropertyModal({
           <>
             <div className="flex items-center justify-between gap-3 text-sm">
               <span className="text-gray-400">Prompt</span>
-              <span className="text-white font-medium">Waiting on your decision</span>
+              <span className="text-white font-medium">{isCorporatePrompt ? 'Optional corporate buyout' : 'Waiting on your decision'}</span>
             </div>
+            <p className="mb-3 text-sm text-blue-100/80">
+              {isCorporatePrompt
+                ? `This is corporate land, not an unowned property. You may attempt a buyout from ${corporateOwner?.name || 'the corporation'} for ${formatMoney(corporateBuyoutPrice)} or decline and pay corporate rent immediately.`
+                : `Buy this property now for ${formatMoney(property.current_value || property.base_price)}.`}
+            </p>
             <div className="w-full bg-gray-800 rounded-full h-1.5 mb-2">
               <div
                 className="h-1.5 rounded-full transition-all duration-1000"
@@ -960,11 +939,19 @@ export default function PropertyModal({
             </div>
             <p className="text-xs text-gray-500 text-center mb-4">Auto-decline in {timeLeft}s</p>
             <div className="flex gap-3">
-              <button onClick={onBuy} className="btn-primary flex-1">
-                Buy {formatMoney(property.current_value || property.base_price)}
+              <button
+                onClick={onBuy}
+                disabled={isCorporatePrompt && !canSubmitCorporateBuyout}
+                className="btn-primary flex-1 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isCorporatePrompt
+                  ? canSubmitCorporateBuyout
+                    ? `Buy Out ${formatMoney(corporateBuyoutPrice)}`
+                    : `Cannot Buy Out ${formatMoney(corporateBuyoutPrice)}`
+                  : `Buy ${formatMoney(property.current_value || property.base_price)}`}
               </button>
               <button onClick={onDecline} className="btn-ghost flex-1">
-                Decline
+                {isCorporatePrompt ? `Decline And Pay ${formatMoney(property.corporate_rent || currentRent)}` : 'Decline'}
               </button>
             </div>
           </>

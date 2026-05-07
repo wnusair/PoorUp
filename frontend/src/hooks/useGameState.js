@@ -168,6 +168,7 @@ export const useGameStore = create(
   isRolling: false,
   diceRollTime: null,  // timestamp when dice_rolled event was received
   uprisingEvent: null,
+  governmentEvent: null,
   hyperInflation: null,
   auctionState: null,
   trades: [],
@@ -339,6 +340,9 @@ export const useGameStore = create(
 
   setUprisingEvent: (event) => set({ uprisingEvent: event }),
   clearUprising: () => set({ uprisingEvent: null }),
+
+  setGovernmentEvent: (event) => set({ governmentEvent: event }),
+  clearGovernmentEvent: () => set({ governmentEvent: null }),
 
   setHyperInflation: (data) => set({ hyperInflation: data }),
   clearHyperInflation: () => set({ hyperInflation: null }),

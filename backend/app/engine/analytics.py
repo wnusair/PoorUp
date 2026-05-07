@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from app.engine.economy import calculate_net_worth
+from app.engine.economy import calculate_net_worth, ensure_regime_economy_state
+from app.engine.liberal_democracy import portfolio_market_value
 from app.models.policy import (
     calculate_lobbying_success_chance,
     get_default_lobbying_policies,
@@ -414,12 +415,15 @@ def record_player_finance_snapshot(game_state: dict, *, force: bool = False) -> 
     for player in next_state.get("players", []):
         player_key = str(player["id"])
         snapshots = list(player_history.get(player_key, []))
+        _econ_state = ensure_regime_economy_state(next_state.get("econ", {}), next_state.get("settings", {}))
+        _portfolio_val = round(float(portfolio_market_value(player, _econ_state) or 0), 2)
         snapshots.append({
             "timestamp": timestamp,
             "round": current_round,
             "turn_index": turn_index,
             "balance": round(float(player.get("balance", 0) or 0), 2),
             "net_worth": round(float(calculate_net_worth(player, next_state) or 0), 2),
+            "portfolio_value": _portfolio_val,
             "treasury_balance": treasury_balance,
         })
         player_history[player_key] = snapshots[-PLAYER_FINANCE_HISTORY_LIMIT:]

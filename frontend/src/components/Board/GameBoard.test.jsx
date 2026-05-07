@@ -81,4 +81,38 @@ describe('GameBoard seized property rendering', () => {
 
     expect(screen.getAllByText(/Property Of The People/i)).toHaveLength(1);
   });
+
+  it('renders corporate ownership directly on board spaces', () => {
+    useGameStore.setState({
+      playerAnimPositions: {},
+      movingPlayerId: null,
+      economy: {
+        corporations: {
+          by_id: {
+            corp_1: { id: 'corp_1', name: 'Atlas Capital', stock_symbol: 'CORP1' },
+          },
+        },
+      },
+    });
+
+    render(
+      <GameBoard
+        players={[]}
+        properties={{
+          12: {
+            id: 12,
+            board_position: 12,
+            name: 'Istanbul',
+            property_type: 'property',
+            base_price: 140,
+            group_color: '#8b5cf6',
+            corporate_owner_id: 'corp_1',
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTitle(/Corporate owner: Atlas Capital/i)).toBeInTheDocument();
+    expect(screen.getByText('CORP')).toBeInTheDocument();
+  });
 });

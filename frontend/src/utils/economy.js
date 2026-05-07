@@ -372,6 +372,7 @@ export function buildPlayerFinanceSeries(playerFinanceHistory, playerId) {
     turn_index: numberValue(entry.turn_index, 0),
     balance: numberValue(entry.balance, 0),
     net_worth: numberValue(entry.net_worth, 0),
+    portfolio_value: numberValue(entry.portfolio_value, 0),
     treasury_balance: numberValue(entry.treasury_balance, 0),
   }));
 }
@@ -409,9 +410,9 @@ export function buildBudgetHistorySeries(taxStats, economy) {
   }];
 }
 
-export function buildCurrentNetWorthRows(players, properties) {
+export function buildCurrentNetWorthRows(players, properties, economy) {
   return (players || []).map((player) => ({
     ...player,
-    netWorth: calculateNetWorth(player, properties),
+    netWorth: calculateNetWorth(player, properties, economy),
   }));
 }

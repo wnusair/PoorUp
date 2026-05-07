@@ -39,7 +39,7 @@ class TradingEngineTests(unittest.TestCase):
             'requested_money': 0.0,
             'offered_props': [],
             'requested_props': [],
-            'offered_lobby_pledges': [{'target': 'cash_bonus_increase', 'amount': 50.0}],
+            'offered_lobby_pledges': [{'target': 'money_supply_expand', 'amount': 50.0}],
             'requested_lobby_pledges': [],
             'included_deal_drafts': [],
         }
@@ -192,7 +192,7 @@ class TradingEngineTests(unittest.TestCase):
             requested_money=0.0,
             offered_props=[],
             requested_props=[],
-            offered_lobby_pledges=[{'target': 'cash_bonus_increase', 'amount': 50.0}],
+            offered_lobby_pledges=[{'target': 'money_supply_expand', 'amount': 50.0}],
             requested_lobby_pledges=[],
             included_deal_drafts=[],
         )

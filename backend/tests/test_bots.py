@@ -10,7 +10,11 @@ from app.engine import bots  # noqa: E402
 from app.engine.game_loop import CHANCE_CARDS, COMMUNITY_CHEST_CARDS  # noqa: E402
 from app.engine.plot import COMMUNIST_PLOT_OWNER_ID  # noqa: E402
 from app.models.policy import extract_lobbying_request_identifiers, resolve_lobbying_target  # noqa: E402
-from app.utils.bot_registry import get_public_personality_options, validate_bot_configuration  # noqa: E402
+from app.utils.bot_registry import (  # noqa: E402
+    get_public_archetype_options,
+    resolve_bot_configuration,
+    validate_bot_configuration,
+)
 from flask import Flask  # noqa: E402
 
 import random
@@ -151,11 +155,12 @@ class BotStrategyTests(unittest.TestCase):
         self.addCleanup(self.redis_patcher.stop)
         self.addCleanup(self.app_context.pop)
 
-    def profile(self, settings=None, seat_index=0, difficulty='normal', persona=None):
+    def profile(self, settings=None, seat_index=0, difficulty='normal', persona=None, archetype=None):
         return bots.build_bot_profile(
             settings or {'government_type': 'liberal_democracy', 'game_mode': 'standard'},
             difficulty=difficulty,
             persona=persona,
+            archetype=archetype,
             rng=random.Random(7),
             seat_index=seat_index,
         )
@@ -187,16 +192,23 @@ class BotStrategyTests(unittest.TestCase):
 
     def test_illegal_personality_pair_is_rejected(self):
         with self.assertRaises(ValueError):
-            validate_bot_configuration('easy', 'expansionist')
+            validate_bot_configuration('easy', 'not_a_real_personality')
 
-    def test_personality_options_are_filtered_by_difficulty(self):
-        easy_options = {entry['key'] for entry in get_public_personality_options(difficulty='easy')}
-        hard_options = {entry['key'] for entry in get_public_personality_options(difficulty='hard')}
+    def test_archetype_options_stay_available_at_every_difficulty(self):
+        easy_options = {entry['key'] for entry in get_public_archetype_options(difficulty='easy')}
+        hard_options = {entry['key'] for entry in get_public_archetype_options(difficulty='hard')}
 
-        self.assertIn('steady_collector', easy_options)
-        self.assertNotIn('expansionist', easy_options)
-        self.assertIn('expansionist', hard_options)
-        self.assertNotIn('leverage_architect', hard_options)
+        self.assertEqual(easy_options, {'minarchist', 'liberal_democrat', 'social_democrat'})
+        self.assertEqual(hard_options, {'minarchist', 'liberal_democrat', 'social_democrat'})
+
+    def test_archetype_options_and_resolution_stay_publicly_stable(self):
+        archetypes = {entry['key'] for entry in get_public_archetype_options()}
+
+        self.assertEqual(archetypes, {'minarchist', 'liberal_democrat', 'social_democrat'})
+        difficulty, personality, archetype = resolve_bot_configuration('normal', archetype='liberal_democrat')
+        self.assertEqual(difficulty, 'normal')
+        self.assertEqual(personality, 'balanced_operator')
+        self.assertEqual(archetype, 'liberal_democrat')
 
     def test_regime_summary_respects_difficulty_capability_split(self):
         player = make_player(1, 'Atlas', 140)
@@ -382,7 +394,7 @@ class BotStrategyTests(unittest.TestCase):
         self.assertEqual(move['direction'], 'enable')
         self.assertEqual(move['reason'], 'unlock_safety_net')
 
-    def test_liberal_democracy_bot_restores_investor_confidence_with_deregulation(self):
+    def test_liberal_democracy_bot_restores_market_confidence_with_money_supply_expansion(self):
         player = make_player(1, 'Atlas', 2500)
         rival = make_player(2, 'Rival', 900, is_bot=False)
         state = make_state([player, rival], [], welfare=18.0, tax=0.21, government_type='liberal_democracy')
@@ -393,18 +405,18 @@ class BotStrategyTests(unittest.TestCase):
             'stability': 0.64,
             'treasury_balance': 900,
         })
-        policy = SimpleNamespace(id=19, target_stat='market_deregulation', policy_name='Market Deregulation')
+        policy = SimpleNamespace(id=19, target_stat='money_supply_expand', policy_name='Expand Money Supply')
 
         with patch.object(bots, 'ensure_match_lobbying_policy', return_value=policy), patch.object(bots.LobbyContribution, 'query', new=StaticQuery(items=[])):
             move = bots.choose_lobbying_move(player, state, self.profile(state['settings'], difficulty='hard', persona='policy_shaper'))
 
         self.assertIsNotNone(move)
-        self.assertEqual(move['target'], 'market_deregulation')
-        self.assertEqual(move['axis'], 'capital_markets')
+        self.assertEqual(move['target'], 'money_supply_expand')
+        self.assertEqual(move['axis'], 'money_supply')
         self.assertEqual(move['direction'], 'expand')
-        self.assertEqual(move['reason'], 'restore_investor_confidence')
+        self.assertEqual(move['reason'], 'restore_market_confidence')
 
-    def test_liberal_democracy_bot_pushes_capital_controls_under_shareholder_backlash(self):
+    def test_liberal_democracy_bot_pushes_money_supply_contraction_under_shareholder_backlash(self):
         player = make_player(1, 'Atlas', 2500)
         rival = make_player(2, 'Rival', 900, is_bot=False)
         property_entry = make_property(11, 'Bronze One', '#8B4513', 100, owner_id=1, board_position=11, dev_level=3)
@@ -432,13 +444,15 @@ class BotStrategyTests(unittest.TestCase):
                 {'owner_id': 1, 'territory_instability': 72.0},
             ],
         }
-        policy = SimpleNamespace(id=20, target_stat='capital_controls', policy_name='Market Oversight')
+        policy = SimpleNamespace(id=20, target_stat='money_supply_contract', policy_name='Contract Money Supply')
 
-        with patch.object(bots, 'ensure_match_lobbying_policy', return_value=policy), patch.object(bots.LobbyContribution, 'query', new=StaticQuery(items=[])):
+        with patch.object(bots, '_social_lobby_target', return_value='money_supply_contract'), patch.object(
+            bots, 'ensure_match_lobbying_policy', return_value=policy
+        ), patch.object(bots.LobbyContribution, 'query', new=StaticQuery(items=[])):
             move = bots.choose_lobbying_move(player, state, self.profile(state['settings'], difficulty='expert', persona='treasury_predator'))
 
         self.assertIsNotNone(move)
-        self.assertEqual(move['target'], 'capital_controls')
+        self.assertEqual(move['target'], 'money_supply_contract')
         self.assertEqual(move['reason'], 'reduce_civil_risk')
 
     def test_development_target_builds_when_bot_has_monopoly_and_large_surplus(self):
@@ -455,6 +469,53 @@ class BotStrategyTests(unittest.TestCase):
 
         self.assertIsNotNone(target)
         self.assertIn(target['id'], {11, 12, 13})
+
+    def test_plot_underling_bot_follows_the_commander_goal(self):
+        commander = make_player(1, 'Commander', 120, is_bot=True)
+        follower = make_player(2, 'Follower', 140, is_bot=True)
+        state = make_state([commander, follower], [], government_type='liberal_democracy')
+        follower['plot_role'] = 'committed_member'
+        follower['plot_join_round'] = 3
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'stage': 3,
+                'support': 8.0,
+                'supply': 5.0,
+                'joint_account_balance': 120.0,
+                'member_ids': [1, 2],
+                'committed_member_ids': [2],
+                'cadre_ids': [],
+                'coalition_member_ids': [],
+                'commander_id': 1,
+                'commander': {'player_id': 1, 'role': 'founder'},
+                'command_chain': [
+                    {'player_id': 1, 'role': 'founder', 'promotion_ready': False, 'contribution_round_count': 2, 'required_contribution_rounds': 1},
+                    {'player_id': 2, 'role': 'committed_member', 'promotion_ready': False, 'contribution_round_count': 2, 'required_contribution_rounds': 2},
+                ],
+                'strategic_goal': 'seize_property',
+                'strategic_goal_text': 'Seize Cairo next.',
+                'goal_target_region': 'Africa',
+                'goal_target_property_id': 44,
+                'legal_targets': [
+                    {'property_id': 44, 'property_name': 'Cairo', 'region': 'Africa', 'preview_score': 7, 'agitation': 3},
+                ],
+                'seized_properties': [],
+                'recruitable_players': [],
+                'join_invites': {},
+                'join_requests': {},
+                'clusters': [],
+                'regions': {'Africa': {'seeded_cells': 1}},
+            },
+        }
+
+        action = bots.choose_plot_management_action(follower, state, self.profile(), regime={})
+
+        self.assertEqual(action['type'], 'plot_action')
+        self.assertEqual(action['action_type'], 'attempt_seizure')
+        self.assertEqual(action['property_id'], 44)
+        self.assertEqual(action['reason'], 'follow_commander_goal')
 
     def test_bot_can_found_plot_when_hardship_eligible(self):
         player = make_player(1, 'Atlas', 120)
@@ -718,12 +779,14 @@ class BotStrategyTests(unittest.TestCase):
         player = make_player(1, 'Atlas', 700)
         player.update({'plot_role': 'committed_member'})
         rival = make_player(2, 'Rival', 1200, is_bot=False)
+        ally = make_player(3, 'Nova', 800)
+        ally_two = make_player(4, 'Sable', 850)
         properties = [
             make_property(21, 'Red One', '#EAB308', 220, owner_id=1, board_position=21, dev_level=2),
             make_property(22, 'Red Two', '#EAB308', 220, owner_id=1, board_position=22, dev_level=1),
             make_property(23, 'Red Three', '#EAB308', 240, owner_id=1, board_position=23, dev_level=1),
         ]
-        state = make_state([player, rival], properties, government_type='social_democracy', round_number=7)
+        state = make_state([player, rival, ally, ally_two], properties, government_type='social_democracy', round_number=7)
         state['social'] = {
             'plot': {
                 'exists': True,
@@ -731,8 +794,19 @@ class BotStrategyTests(unittest.TestCase):
                 'stage': 3,
                 'support': 9.0,
                 'supply': 4.0,
-                'member_ids': [1],
-                'committed_member_ids': [1],
+                'member_ids': [1, 3, 4],
+                'committed_member_ids': [1, 3, 4],
+                'commander': {'player_id': 3},
+                'members': {
+                    '1': {'player_id': 1, 'role': 'committed_member', 'active': True, 'joined_round': 3},
+                    '3': {'player_id': 3, 'role': 'committed_member', 'active': True, 'joined_round': 3},
+                    '4': {'player_id': 4, 'role': 'committed_member', 'active': True, 'joined_round': 3},
+                },
+                'command_chain': [
+                    {'player_id': 1, 'role': 'committed_member', 'joined_round': 3},
+                    {'player_id': 3, 'role': 'committed_member', 'joined_round': 3},
+                    {'player_id': 4, 'role': 'committed_member', 'joined_round': 3},
+                ],
                 'control_percent': 10.0,
                 'seized_property_ids': [11],
                 'victory_countdown': {'active': False, 'countdown_eligible': False},
@@ -1383,33 +1457,33 @@ class BotStrategyTests(unittest.TestCase):
         self.assertEqual(resolve_lobbying_target(axis='welfare_rate', direction='decrease'), 'welfare_decrease')
         self.assertEqual(resolve_lobbying_target(axis='bailouts', direction='enable'), 'bailout_enable')
         self.assertEqual(resolve_lobbying_target(axis='housing_regulation', direction='loosen'), 'deregulate_housing')
-        self.assertEqual(resolve_lobbying_target(axis='capital_markets', direction='tighten'), 'capital_controls')
-        self.assertEqual(resolve_lobbying_target(axis='cash_bonus', direction='increase'), 'cash_bonus_increase')
-        self.assertEqual(resolve_lobbying_target(axis='investor_mood', direction='boost'), 'investor_mood_increase')
+        self.assertEqual(resolve_lobbying_target(axis='money_supply', direction='contract'), 'money_supply_contract')
+        self.assertEqual(resolve_lobbying_target(axis='tax_brackets', direction='raise_rate'), 'tax_bracket_rate_up')
+        self.assertEqual(resolve_lobbying_target(axis='treasury_transfers', direction='toward_players'), 'treasury_transfer_players')
 
     def test_lobbying_target_resolution_accepts_normalized_target_shapes(self):
-        self.assertEqual(resolve_lobbying_target(axis='capital markets', direction='tighten'), 'capital_controls')
-        self.assertEqual(resolve_lobbying_target(axis='investor-mood', direction='boost'), 'investor_mood_increase')
-        self.assertEqual(resolve_lobbying_target(target='cash-bonus-increase'), 'cash_bonus_increase')
-        self.assertEqual(resolve_lobbying_target(target_stat='cash bonus increase'), 'cash_bonus_increase')
-        self.assertEqual(resolve_lobbying_target(target='Increase Cash Bonus'), 'cash_bonus_increase')
+        self.assertEqual(resolve_lobbying_target(axis='money supply', direction='contract'), 'money_supply_contract')
+        self.assertEqual(resolve_lobbying_target(axis='tax-brackets', direction='raise-rate'), 'tax_bracket_rate_up')
+        self.assertEqual(resolve_lobbying_target(target='expand-money-supply'), 'money_supply_expand')
+        self.assertEqual(resolve_lobbying_target(target='Raise Bracket Rate'), 'tax_bracket_rate_up')
+        self.assertEqual(resolve_lobbying_target(target='Expand Money Supply'), 'money_supply_expand')
 
     def test_lobbying_request_identifier_extraction_accepts_nested_policy_shapes(self):
         identifiers = extract_lobbying_request_identifiers({
             'policy': {
                 'id': 17,
-                'policy_name': 'Increase Cash Bonus',
-                'target_stat': 'cash_bonus_increase',
-                'axis_label': 'Cash Bonus',
-                'direction_label': 'Increase',
+                'policy_name': 'Expand Money Supply',
+                'target_stat': 'money_supply_expand',
+                'axis_label': 'Money Supply',
+                'direction_label': 'Expand',
             },
         })
 
         self.assertEqual(identifiers['policy_id'], 17)
-        self.assertEqual(identifiers['axis'], 'Cash Bonus')
-        self.assertEqual(identifiers['direction'], 'Increase')
-        self.assertEqual(identifiers['target'], 'Increase Cash Bonus')
-        self.assertEqual(identifiers['target_stat'], 'cash_bonus_increase')
+        self.assertEqual(identifiers['axis'], 'Money Supply')
+        self.assertEqual(identifiers['direction'], 'Expand')
+        self.assertEqual(identifiers['target'], 'Expand Money Supply')
+        self.assertEqual(identifiers['target_stat'], 'money_supply_expand')
         self.assertEqual(
             resolve_lobbying_target(
                 axis=identifiers['axis'],
@@ -1417,7 +1491,7 @@ class BotStrategyTests(unittest.TestCase):
                 target=identifiers['target'],
                 target_stat=identifiers['target_stat'],
             ),
-            'cash_bonus_increase',
+            'money_supply_expand',
         )
 
     def test_recoverable_distress_prefers_bailout_over_engine_mortgage(self):
@@ -1440,6 +1514,136 @@ class BotStrategyTests(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual(action['type'], 'bankruptcy')
+
+    def test_plot_bot_does_not_leave_immediately_after_joining(self):
+        player = make_player(1, 'Atlas', 1800)
+        player['plot_role'] = 'committed_member'
+        allies = [make_player(2, 'Nova', 500), make_player(3, 'Sable', 500)]
+        properties = [
+            make_property(11, 'Bronze One', '#8B4513', 100, owner_id=1, board_position=11, dev_level=2),
+            make_property(12, 'Bronze Two', '#8B4513', 100, owner_id=1, board_position=12, dev_level=2),
+            make_property(13, 'Bronze Three', '#8B4513', 120, owner_id=1, board_position=13, dev_level=1),
+        ]
+        state = make_state([player, *allies], properties, government_type='communism', round_number=10)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'stage': 3,
+                'support': 8,
+                'supply': 5,
+                'member_ids': [1, 2, 3],
+                'committed_member_ids': [1, 2, 3],
+                'commander': {'player_id': 2},
+                'members': {
+                    '1': {'player_id': 1, 'role': 'committed_member', 'active': True, 'joined_round': 9},
+                    '2': {'player_id': 2, 'role': 'committed_member', 'active': True, 'joined_round': 4},
+                    '3': {'player_id': 3, 'role': 'committed_member', 'active': True, 'joined_round': 4},
+                },
+                'command_chain': [
+                    {'player_id': 1, 'role': 'committed_member', 'joined_round': 9},
+                    {'player_id': 2, 'role': 'committed_member', 'joined_round': 4},
+                    {'player_id': 3, 'role': 'committed_member', 'joined_round': 4},
+                ],
+            },
+        }
+
+        action = bots.choose_plot_management_action(player, state, self.profile(state['settings'], difficulty='hard'))
+
+        self.assertNotEqual((action or {}).get('type'), 'plot_leave')
+
+    def test_plot_bot_private_path_defection_blocks_rejoin_loop(self):
+        player = make_player(1, 'Atlas', 1600)
+        player['plot_defection_cooldown_until'] = 8
+        state = make_state([player, make_player(2, 'Nova', 500), make_player(3, 'Sable', 500)], [], government_type='communism', round_number=10)
+        state['social'] = {
+            'plot': {
+                'exists': True,
+                'public': True,
+                'stage': 2,
+                'support': 7,
+                'supply': 3,
+                'member_ids': [2, 3],
+                'committed_member_ids': [2, 3],
+                'join_invites': {'1': {'player_id': 1, 'invited_round': 10}},
+                'members': {
+                    '1': {
+                        'player_id': 1,
+                        'role': 'committed_member',
+                        'active': False,
+                        'joined_round': 4,
+                        'left_round': 6,
+                        'defection_reason': 'protect_private_win_path',
+                        'defection_cooldown_until': 8,
+                    },
+                    '2': {'player_id': 2, 'role': 'committed_member', 'active': True, 'joined_round': 4},
+                    '3': {'player_id': 3, 'role': 'committed_member', 'active': True, 'joined_round': 4},
+                },
+            },
+        }
+
+        action = bots.choose_plot_management_action(player, state, self.profile(state['settings'], difficulty='hard'))
+
+        self.assertEqual(action['type'], 'plot_join')
+        self.assertEqual(action['intent'], 'decline')
+        self.assertEqual(action['reason'], 'recent_private_path_defection')
+
+    def test_hidden_partnerships_are_deterministic_and_not_public_state(self):
+        players = [
+            {**make_player(1, 'Atlas', 900), 'bot_profile': {'difficulty': 'hard', 'archetype': 'liberal_democrat'}},
+            {**make_player(2, 'Nova', 1100), 'bot_profile': {'difficulty': 'expert', 'archetype': 'social_democrat'}},
+            {**make_player(3, 'Sable', 700), 'bot_profile': {'difficulty': 'normal', 'archetype': 'minarchist'}},
+            make_player(4, 'Human', 1200, is_bot=False),
+        ]
+        state = make_state(players, [], government_type='liberal_democracy', round_number=6)
+
+        payload = bots.ensure_hidden_bot_partnerships(state)
+        metrics = bots.calculate_hidden_partnership_cooperation_metrics(state)
+
+        self.assertEqual(payload['pairs'][0]['player_ids'], [1, 2])
+        self.assertEqual(metrics['pair_count'], 1)
+        self.assertGreater(metrics['average_cooperation'], 0.35)
+        self.assertNotIn('bot_partnerships', state)
+        self.assertNotIn('hidden_partnerships', state)
+
+    def test_liberal_democrat_bot_simulation_chooses_coherent_bank_and_market_actions(self):
+        profile = self.profile(
+            {'government_type': 'liberal_democracy', 'game_mode': 'standard'},
+            difficulty='hard',
+            archetype='liberal_democrat',
+        )
+        market = {
+            'sentiment': 78.0,
+            'assets': {
+                'CORP1': {'asset_key': 'CORP1', 'label': 'Atlas Capital', 'kind': 'stock', 'price': 20.0, 'price_change_last_round': 0.04, 'volatility': 0.06},
+                'BTC': {'asset_key': 'BTC', 'label': 'Bitcoin', 'kind': 'crypto', 'price': 80.0, 'price_change_last_round': 0.02, 'volatility': 0.18},
+            },
+        }
+        player = {
+            **make_player(1, 'Atlas', 2500),
+            'bank_savings_balance': 0.0,
+            'bank_loan_principal': 0.0,
+            'portfolio': {'stocks': {}, 'crypto': {}},
+        }
+        state = make_state([player, make_player(2, 'Nova', 900, is_bot=False)], [], government_type='liberal_democracy', round_number=8)
+        state['econ']['market'] = market
+
+        first_action = bots.choose_liberal_democracy_finance_action(player, state, profile)
+        self.assertEqual(first_action['type'], 'bank_action')
+        self.assertEqual(first_action['bank_action'], 'deposit')
+
+        investor = {**player, 'balance': 2200.0, 'bank_savings_balance': 240.0}
+        state['players'][0] = investor
+        second_action = bots.choose_liberal_democracy_finance_action(investor, state, profile)
+        self.assertEqual(second_action['type'], 'market_order')
+        self.assertEqual(second_action['side'], 'buy')
+        self.assertEqual(second_action['asset_key'], 'CORP1')
+
+        borrower = {**player, 'balance': 40.0, 'bank_savings_balance': 0.0}
+        state['players'][0] = borrower
+        third_action = bots.choose_liberal_democracy_finance_action(borrower, state, profile)
+        self.assertEqual(third_action['type'], 'bank_action')
+        self.assertEqual(third_action['bank_action'], 'loan')
 
     def test_removed_jail_cards_are_absent_from_both_decks(self):
         removed_effects = {'get_out_of_jail_free', 'go_to_jail'}

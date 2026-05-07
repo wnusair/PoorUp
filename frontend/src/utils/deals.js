@@ -96,11 +96,11 @@ export function getActivePlayerCount(players = []) {
 }
 
 export function getBuildLoanHeadsUpMultiplier(activePlayerCount = 0) {
-  return activePlayerCount === 2 ? 1.1 : 1;
+  return 1;
 }
 
 export function getEffectiveBuildLoanMaxPayout(maxPayout = 0, privateEquityBonus = 1, activePlayerCount = 0) {
-  return Number(maxPayout || 0) * Math.max(1, Number(privateEquityBonus || 1)) * getBuildLoanHeadsUpMultiplier(activePlayerCount);
+  return Number(maxPayout || 0);
 }
 
 export function estimatePropertyRent(property, properties, economy = {}) {
@@ -138,16 +138,11 @@ export function summarizeClause(clause, myPlayerId, players = [], properties = {
   const escrowAmount = Number(clause?.config?.escrow_amount || 0);
   const profitSharePercent = Math.round(Number(clause?.config?.profit_share_percent || 0) * 100);
   const maxPayout = Number(clause?.config?.max_payout || 0);
-  const effectiveMaxPayout = getEffectiveBuildLoanMaxPayout(
-    maxPayout,
-    Number(economy?.private_equity_bonus_multiplier || 1),
-    getActivePlayerCount(players),
-  );
   const scopedProperties = getPropertiesArray(properties).filter((property) => scopeMatchesProperty(clause.scope, property, clause.beneficiary_id));
   const scopeLabel = scopedProperties.length > 0
     ? `${scopedProperties.length} eligible propert${scopedProperties.length === 1 ? 'y' : 'ies'}`
     : 'selected assets';
-  return `${grantorName} puts up ${formatMoney(escrowAmount)} for ${beneficiaryName}'s builds on ${scopeLabel}. ${grantorName} gets ${profitSharePercent}% of the rent value from those funded upgrades until repaid, up to ${formatMoney(effectiveMaxPayout)}.`;
+  return `${grantorName} puts up ${formatMoney(escrowAmount)} for ${beneficiaryName}'s builds on ${scopeLabel}. ${grantorName} gets ${profitSharePercent}% of the rent value from those funded upgrades until repaid, up to ${formatMoney(maxPayout)}.`;
 }
 
 

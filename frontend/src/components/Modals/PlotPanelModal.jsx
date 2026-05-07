@@ -534,6 +534,47 @@ export default function PlotPanelModal({
               <Metric label="Control" value={`${Number(plot?.control_percent || 0).toFixed(1)}%`} tone="text-cyan-200" />
             </div>
 
+            {plotMember && (
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-3xl border border-amber-900/60 bg-amber-950/20 p-4">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-amber-400">Faction Treasury</p>
+                  <p className="mt-2 text-2xl font-semibold text-white">{formatExactMoney(plot?.joint_account_balance || 0)}</p>
+                  <p className="mt-1 text-xs text-amber-200/70">Pooled cash available for faction operations</p>
+                </div>
+                <div className="rounded-3xl border border-orange-900/60 bg-orange-950/20 p-4">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-orange-400">Contribution Rate</p>
+                  <p className="mt-2 text-2xl font-semibold text-white">{((Number(plot?.joint_account_contribution_rate || 0)) * 100).toFixed(0)}%</p>
+                  <p className="mt-1 text-xs text-orange-200/70">Share of each member's contribution that pools here</p>
+                </div>
+                <div className="rounded-3xl border border-yellow-900/60 bg-yellow-950/20 p-4">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-yellow-400">My Cash Contributed</p>
+                  <p className="mt-2 text-2xl font-semibold text-white">
+                    {formatExactMoney(
+                      Object.values(plot?.joint_account_contributions || {}).reduce((sum, val) => sum + (Number(val) || 0), 0)
+                    )}
+                  </p>
+                  <p className="mt-1 text-xs text-yellow-200/70">Total pooled from all members this game</p>
+                </div>
+              </div>
+            )}
+
+            {(isCommander || me?.plot_role === 'founder') && Object.keys(plot?.joint_account_contributions || {}).length > 0 && (
+              <Section title="Member Contributions" subtitle="Cash each member has pooled into the faction treasury.">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {Object.entries(plot?.joint_account_contributions || {}).map(([playerId, amount]) => {
+                    const member = playerById[Number(playerId)] || null;
+                    return (
+                      <div key={playerId} className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                        <p className="font-semibold text-white">{member?.username || `Player ${playerId}`}</p>
+                        <p className="mt-2 text-xl font-bold text-amber-300">{formatExactMoney(amount)}</p>
+                        <p className="mt-1 text-xs text-slate-500">pooled into faction treasury</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Section>
+            )}
+
             <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
               <Section title="Current Position" subtitle="See your role, hardship, and command access in the plot.">
                 <div className="grid gap-4 lg:grid-cols-2">

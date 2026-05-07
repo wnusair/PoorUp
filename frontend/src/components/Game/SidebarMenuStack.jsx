@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useGameStore } from '../../hooks/useGameState';
 import { adminSeedPlotDebug } from '../../utils/api';
+import { normalizeGovernmentType } from '../../utils/gameState';
 
 function getStoredUserId() {
   if (typeof globalThis === 'undefined' || !globalThis.localStorage) {
@@ -25,8 +26,11 @@ function hostDebugToolsEnabled() {
 }
 
 export default function SidebarMenuStack() {
-  const { settings, setActiveModal, clearTrade, clearActiveDeal, matchId, lobbyData } = useGameStore();
+  const { settings, economy, setActiveModal, clearTrade, clearActiveDeal, matchId, lobbyData } = useGameStore();
   const [seedingPlot, setSeedingPlot] = useState(false);
+  const isLiberalDemocracy = normalizeGovernmentType(
+    economy?.gov_type || economy?.government_type || settings?.government_type || 'minarchism',
+  ) === 'liberal_democracy';
   const [debugMessage, setDebugMessage] = useState('');
   const storedUserId = getStoredUserId();
   const isHost = storedUserId != null && Number(lobbyData?.match?.host_user_id) === storedUserId;
@@ -43,6 +47,13 @@ export default function SidebarMenuStack() {
       label: 'Open Plot Panel',
       className: 'border-red-700/70 bg-red-950/30 text-red-200 hover:border-red-500 hover:text-white',
     },
+    isLiberalDemocracy
+      ? {
+          key: 'liberal_democracy',
+          label: 'Open Market & Finance',
+          className: 'border-cyan-700/70 bg-cyan-950/30 text-cyan-200 hover:border-cyan-500 hover:text-white',
+        }
+      : null,
     {
       key: 'taxation',
       label: 'Open Economy Panel',
@@ -89,10 +100,10 @@ export default function SidebarMenuStack() {
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+    <div className="rounded-xl border border-slate-700/60 bg-slate-900/60 p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Panels</h3>
-        <span className="text-[11px] text-gray-500">Menu stack</span>
+        <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Panels</h3>
+        <span className="text-[11px] text-slate-500">Menu stack</span>
       </div>
 
       <div className="grid gap-2">

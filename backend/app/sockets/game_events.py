@@ -74,6 +74,14 @@ from app.engine.economy import (
     calculate_development_refund,
     property_is_fully_developed,
 )
+from app.engine.liberal_democracy import (
+    buy_corporate_property as execute_corporate_buyout,
+    deposit_bank_funds as execute_deposit_bank_funds,
+    repay_bank_loan as execute_repay_bank_loan,
+    request_bank_loan as execute_request_bank_loan,
+    submit_market_order as execute_submit_market_order,
+    withdraw_bank_funds as execute_withdraw_bank_funds,
+)
 from app.utils.color_utils import PLAYER_COLOR_PALETTE, is_valid_color
 from app.utils.settings import normalize_government_type, normalize_settings_payload
 from app.engine.bots import has_active_auction, queue_bot_auction_reactions, queue_bot_state_evaluation, queue_bot_trade_responses
@@ -637,6 +645,72 @@ def handle_buy_property(data):
     finalize_turn_resolution(gs, mp.id, dice_result, match_id, redis_client, socketio)
 
 
+@socketio.on("buy_corporate_property")
+def handle_buy_corporate_property(data):
+    """Player buys out a corporation-owned property they landed on."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    match_id = int(data.get("match_id", 0))
+    gs = load_game_state(match_id, redis_client)
+    if not gs:
+        return
+
+    mp = MatchPlayer.query.filter_by(match_id=match_id, user_id=user_id).first()
+    if not mp or mp.is_bankrupt:
+        return
+
+    pending_action = gs.get("pending_action") or {}
+    if pending_action.get("type") != "buy_corporate_property" or pending_action.get("player_id") != mp.id:
+        emit("error", {"message": "There is no corporate property awaiting your decision."})
+        return
+
+    pending_turn = gs.get("pending_turn_context") or {}
+    dice_result = pending_turn.get("dice_result")
+    if not dice_result:
+        emit("error", {"message": "Turn context expired. Please refresh the game state."})
+        return
+
+    property_id = pending_action.get("property_id")
+    try:
+        gs, result = execute_corporate_buyout(gs, player_id=mp.id, property_id=int(property_id or 0))
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+
+    from app.models.property import Property
+    db_prop = Property.query.filter_by(match_id=match_id, id=int(property_id or 0)).first()
+    if db_prop:
+        db_prop.owner_id = mp.id
+    mp.balance = float((result.get("player") or {}).get("balance", mp.balance) or mp.balance)
+    db.session.commit()
+
+    gs = log_and_broadcast(
+        gs,
+        "property_purchased",
+        f"{(result.get('player') or {}).get('username', 'Player')} bought out {result.get('property_name', 'the property')} for ${float(result.get('price', 0) or 0):.2f}.",
+        match_id,
+        redis_client,
+        socketio,
+        player_id=mp.id,
+    )
+    socketio.emit(
+        "property_purchased",
+        {
+            "player_id": mp.id,
+            "player_name": (result.get("player") or {}).get("username", "Player"),
+            "player_balance": (result.get("player") or {}).get("balance"),
+            "property_id": result.get("property_id"),
+            "price": result.get("price"),
+            "property_name": result.get("property_name"),
+            "is_corporate_buyout": True,
+        },
+        room=str(match_id),
+    )
+    finalize_turn_resolution(gs, mp.id, dice_result, match_id, redis_client, socketio)
+
+
 @socketio.on("decline_property")
 def handle_decline_property(data):
     """Player declines to buy — start auction if enabled."""
@@ -655,7 +729,7 @@ def handle_decline_property(data):
         return
 
     pending_action = gs.get("pending_action") or {}
-    if pending_action.get("type") != "buy_property" or pending_action.get("player_id") != mp.id:
+    if pending_action.get("type") not in {"buy_property", "buy_corporate_property"} or pending_action.get("player_id") != mp.id:
         emit("error", {"message": "There is no property awaiting your decision."})
         return
 
@@ -674,6 +748,55 @@ def handle_decline_property(data):
     if not prop:
         return
 
+    if pending_action.get("type") == "buy_corporate_property":
+        player = next((p for p in gs["players"] if p["id"] == mp.id), None)
+        if not player:
+            return
+        rent_amount = round(float(prop.get("corporate_rent", 0) or 0), 2)
+        gs, updated_player = spend_player_balance(gs, mp.id, rent_amount)
+        econ = dict(gs.get("econ", {}) or {})
+        corporations = dict(((econ.get("corporations") or {}).get("by_id") or {}))
+        corporation_id = prop.get("corporate_owner_id")
+        if corporation_id and str(corporation_id) in corporations:
+            corporation = dict(corporations[str(corporation_id)] or {})
+            corporation["cash_reserve"] = round(float(corporation.get("cash_reserve", 0) or 0) + rent_amount, 2)
+            corporation["rent_income_last_round"] = round(float(corporation.get("rent_income_last_round", 0) or 0) + rent_amount, 2)
+            corporations[str(corporation_id)] = corporation
+            econ["corporations"] = {
+                **dict(econ.get("corporations") or {}),
+                "by_id": corporations,
+            }
+            gs["econ"] = econ
+        gs = log_and_broadcast(
+            gs,
+            "rent_collected",
+            f"{player.get('username')} declined a buyout on {prop['name']} and paid ${rent_amount:.2f} to its corporate owner.",
+            match_id,
+            redis_client,
+            socketio,
+            player_id=mp.id,
+        )
+        socketio.emit(
+            "rent_collected",
+            {
+                "payer_id": mp.id,
+                "payer_name": player.get("username", "Player"),
+                "payer_balance": (updated_player or player).get("balance"),
+                "owner_id": corporation_id,
+                "owner_name": "Corporate Owner",
+                "owner_balance": None,
+                "amount": rent_amount,
+                "amount_paid": rent_amount,
+                "amount_due": 0,
+                "total_rent": rent_amount,
+                "property": prop["name"],
+                "is_corporate_rent": True,
+            },
+            room=str(match_id),
+        )
+        finalize_turn_resolution(gs, mp.id, dice_result, match_id, redis_client, socketio)
+        return
+
     if settings.get("auction_enabled", True):
         start_auction(prop, gs, redis_client, socketio, match_id)
 
@@ -687,6 +810,159 @@ def handle_decline_property(data):
         player_id=mp.id,
     )
     finalize_turn_resolution(gs, mp.id, dice_result, match_id, redis_client, socketio)
+
+
+@socketio.on("submit_market_order")
+def handle_submit_market_order(data):
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    match_id = int(data.get("match_id", 0))
+    gs = load_game_state(match_id, redis_client)
+    if not gs:
+        return
+
+    mp = MatchPlayer.query.filter_by(match_id=match_id, user_id=user_id).first()
+    if not mp or mp.is_bankrupt:
+        return
+    if not _require_current_turn(gs, mp.id, "Only the active player can submit market orders."):
+        return
+
+    try:
+        gs, result = execute_submit_market_order(
+            gs,
+            player_id=mp.id,
+            asset_key=str(data.get("asset_key") or data.get("asset") or ""),
+            side=str(data.get("side") or "buy"),
+            quantity=float(data.get("quantity", 0) or 0),
+        )
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+
+    persist_game_state(gs, match_id, redis_client)
+    broadcast_game_state_snapshot(socketio, match_id, gs)
+    queue_bot_state_evaluation(match_id, gs, reason="market_order")
+    socketio.emit(
+        "market_order_submitted",
+        {
+            "player_id": mp.id,
+            "asset_key": result.get("asset_key"),
+            "side": result.get("side"),
+            "quantity": result.get("quantity"),
+            "price": result.get("price"),
+        },
+        room=str(match_id),
+    )
+
+
+@socketio.on("deposit_bank_funds")
+def handle_deposit_bank_funds(data):
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    match_id = int(data.get("match_id", 0))
+    gs = load_game_state(match_id, redis_client)
+    if not gs:
+        return
+
+    mp = MatchPlayer.query.filter_by(match_id=match_id, user_id=user_id).first()
+    if not mp or mp.is_bankrupt:
+        return
+    if not _require_current_turn(gs, mp.id, "Only the active player can move funds at the bank."):
+        return
+
+    try:
+        gs, _ = execute_deposit_bank_funds(gs, player_id=mp.id, amount=float(data.get("amount", 0) or 0))
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+
+    persist_game_state(gs, match_id, redis_client)
+    broadcast_game_state_snapshot(socketio, match_id, gs)
+
+
+@socketio.on("withdraw_bank_funds")
+def handle_withdraw_bank_funds(data):
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    match_id = int(data.get("match_id", 0))
+    gs = load_game_state(match_id, redis_client)
+    if not gs:
+        return
+
+    mp = MatchPlayer.query.filter_by(match_id=match_id, user_id=user_id).first()
+    if not mp or mp.is_bankrupt:
+        return
+    if not _require_current_turn(gs, mp.id, "Only the active player can move funds at the bank."):
+        return
+
+    try:
+        gs, _ = execute_withdraw_bank_funds(gs, player_id=mp.id, amount=float(data.get("amount", 0) or 0))
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+
+    persist_game_state(gs, match_id, redis_client)
+    broadcast_game_state_snapshot(socketio, match_id, gs)
+
+
+@socketio.on("request_bank_loan")
+def handle_request_bank_loan(data):
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    match_id = int(data.get("match_id", 0))
+    gs = load_game_state(match_id, redis_client)
+    if not gs:
+        return
+
+    mp = MatchPlayer.query.filter_by(match_id=match_id, user_id=user_id).first()
+    if not mp or mp.is_bankrupt:
+        return
+    if not _require_current_turn(gs, mp.id, "Only the active player can request a bank loan."):
+        return
+
+    try:
+        gs, _ = execute_request_bank_loan(gs, player_id=mp.id, amount=float(data.get("amount", 0) or 0))
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+
+    persist_game_state(gs, match_id, redis_client)
+    broadcast_game_state_snapshot(socketio, match_id, gs)
+
+
+@socketio.on("repay_bank_loan")
+def handle_repay_bank_loan(data):
+    user_id = session.get("user_id")
+    if not user_id:
+        return
+
+    match_id = int(data.get("match_id", 0))
+    gs = load_game_state(match_id, redis_client)
+    if not gs:
+        return
+
+    mp = MatchPlayer.query.filter_by(match_id=match_id, user_id=user_id).first()
+    if not mp or mp.is_bankrupt:
+        return
+    if not _require_current_turn(gs, mp.id, "Only the active player can repay a bank loan."):
+        return
+
+    try:
+        gs, _ = execute_repay_bank_loan(gs, player_id=mp.id, amount=float(data.get("amount", 0) or 0))
+    except ValueError as exc:
+        emit("error", {"message": str(exc)})
+        return
+
+    persist_game_state(gs, match_id, redis_client)
+    broadcast_game_state_snapshot(socketio, match_id, gs)
 
 
 @socketio.on("auction_bid")

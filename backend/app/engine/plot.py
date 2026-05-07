@@ -331,6 +331,13 @@ def _plot_defaults() -> dict:
         "support": 0.0,
         "supply": 0.0,
         "heat": 0.0,
+        "joint_account_balance": 0.0,
+        "joint_account_contribution_rate": 0.4,
+        "joint_account_contributions": {},
+        "strategic_goal": None,
+        "strategic_goal_text": None,
+        "goal_target_region": None,
+        "goal_target_property_id": None,
         "support_generated_total": 0.0,
         "control_percent": 0.0,
         "first_seizure_round": None,
@@ -441,6 +448,8 @@ def _coerce_plot_state(value: dict | None, current_round: int) -> dict:
     plot["support"] = _round(plot.get("support", 0), 2)
     plot["supply"] = _round(plot.get("supply", 0), 2)
     plot["heat"] = _round(plot.get("heat", 0), 2)
+    plot["joint_account_balance"] = _round(plot.get("joint_account_balance", 0), 2)
+    plot["joint_account_contribution_rate"] = _round(plot.get("joint_account_contribution_rate", 0.4), 2)
     plot["support_generated_total"] = _round(plot.get("support_generated_total", 0), 2)
     plot["control_percent"] = _round(plot.get("control_percent", 0), 2)
     plot["stage"] = max(0, int(plot.get("stage", 0) or 0))
@@ -458,6 +467,10 @@ def _coerce_plot_state(value: dict | None, current_round: int) -> dict:
     plot["last_stockpile_round"] = int(plot.get("last_stockpile_round", 0) or 0)
     plot["commander_id"] = int(plot.get("commander_id") or 0) or None
     plot["succession_round"] = int(plot.get("succession_round") or 0) or None
+    plot["strategic_goal"] = str(plot.get("strategic_goal") or "").strip() or None
+    plot["strategic_goal_text"] = str(plot.get("strategic_goal_text") or "").strip() or None
+    plot["goal_target_region"] = str(plot.get("goal_target_region") or "").strip() or None
+    plot["goal_target_property_id"] = int(plot.get("goal_target_property_id") or 0) or None
 
     victory = dict(_plot_defaults()["victory_countdown"])
     victory.update(dict(plot.get("victory_countdown") or {}))
@@ -470,6 +483,11 @@ def _coerce_plot_state(value: dict | None, current_round: int) -> dict:
     plot["members"] = {
         str(int(player_id)): _coerce_member(int(player_id), member_state, current_round)
         for player_id, member_state in (plot.get("members") or {}).items()
+        if str(player_id).isdigit()
+    }
+    plot["joint_account_contributions"] = {
+        str(int(player_id)): _round(amount, 2)
+        for player_id, amount in (plot.get("joint_account_contributions") or {}).items()
         if str(player_id).isdigit()
     }
     plot["join_invites"] = {
@@ -599,6 +617,21 @@ def _add_heat(plot: dict, amount: float) -> dict:
     updated_plot = dict(plot)
     updated_plot["heat"] = _round(clamp(float(updated_plot.get("heat", 0) or 0) + float(amount or 0), 0.0, 100.0), 2)
     return updated_plot
+
+
+def _spend_joint_account_balance(plot: dict, amount: float, *, allow_partial: bool = False) -> tuple[dict, float]:
+    updated_plot = dict(plot)
+    requested_amount = _round(amount, 2)
+    if requested_amount <= 0:
+        return updated_plot, 0.0
+
+    available = _round(updated_plot.get("joint_account_balance", 0), 2)
+    if not allow_partial and available < requested_amount:
+        raise ValueError("The communist plot does not have enough pooled funds for that action.")
+
+    spent_amount = min(available, requested_amount)
+    updated_plot["joint_account_balance"] = _round(max(0.0, available - spent_amount), 2)
+    return updated_plot, spent_amount
 
 
 def _active_member_ids(plot: dict, player_lookup: dict[int, dict]) -> list[int]:
@@ -812,6 +845,79 @@ def _sync_plot_command(plot: dict, game_state: dict, current_round: int) -> dict
     elif updated_plot.get("exists") and prior_commander_id is None and commander_id is not None:
         updated_plot["succession_round"] = updated_plot.get("succession_round") or current_round
     return updated_plot
+
+
+def _select_plot_strategic_goal(plot: dict, game_state: dict) -> tuple[str | None, str | None, str | None, int | None]:
+    player_lookup = _player_index(game_state)
+    commander_id = int(plot.get("commander_id") or 0) or None
+    commander = player_lookup.get(commander_id) or {}
+    if not plot.get("exists") or not commander.get("is_bot"):
+        return (
+            plot.get("strategic_goal"),
+            plot.get("strategic_goal_text"),
+            plot.get("goal_target_region"),
+            plot.get("goal_target_property_id"),
+        )
+
+    legal_targets = list(plot.get("legal_targets") or [])
+    seized_properties = list(plot.get("seized_properties") or [])
+    clusters = list(plot.get("clusters") or [])
+    if legal_targets and int(plot.get("stage", 0) or 0) >= 3:
+        best_target = max(
+            legal_targets,
+            key=lambda entry: (
+                int(entry.get("preview_score", 0) or 0),
+                int(entry.get("agitation", 0) or 0),
+                int(entry.get("board_position", 0) or 0),
+            ),
+        )
+        property_name = best_target.get("property_name") or "the target property"
+        return (
+            "seize_property",
+            f"Seize {property_name} next.",
+            best_target.get("region"),
+            int(best_target.get("property_id") or 0) or None,
+        )
+
+    if seized_properties and clusters:
+        primary_cluster = max(
+            clusters,
+            key=lambda entry: (int(entry.get("size", 0) or 0), float(entry.get("avg_entrenchment", 0) or 0)),
+        )
+        target_region = next(iter(primary_cluster.get("region_names") or []), None)
+        if target_region:
+            return (
+                "fortify_region",
+                f"Fortify our foothold in {target_region}.",
+                target_region,
+                None,
+            )
+
+    regions = sorted(
+        (plot.get("regions") or {}).items(),
+        key=lambda item: (
+            int((item[1] or {}).get("hardship_pressure", 0) or 0),
+            int((item[1] or {}).get("seeded_cells", 0) or 0),
+        ),
+        reverse=True,
+    )
+    if regions:
+        target_region, region_state = regions[0]
+        if int((region_state or {}).get("seeded_cells", 0) or 0) > 0:
+            return (
+                "increase_supply",
+                f"Increase supply in {target_region}.",
+                target_region,
+                None,
+            )
+        return (
+            "build_support",
+            f"Build support in {target_region}.",
+            target_region,
+            None,
+        )
+
+    return ("build_support", "Build support across the board.", None, None)
 
 
 def _require_plot_membership_manager(plot: dict, player_id: int) -> None:
@@ -1700,6 +1806,24 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
     plot["coalition_unlocked"] = bool(plot.get("coalition_unlocked")) or bool(plot.get("first_seizure_round"))
     plot["control_percent"] = control_percent
     plot["regions"] = plot_regions
+    plot["legal_targets"] = legal_targets
+    plot["seized_properties"] = [
+        {
+            "property_id": property_id,
+            "property_name": (properties_by_id.get(property_id) or {}).get("name") or f"Property {property_id}",
+            "region": (properties_by_id.get(property_id) or {}).get("region"),
+            "current_value": float((properties_by_id.get(property_id) or {}).get("current_value") or (properties_by_id.get(property_id) or {}).get("base_price", 0) or 0),
+            "entrenchment": int((social_properties.get(str(property_id)) or {}).get("plot_entrenchment", 0) or 0),
+            "reintegration_progress": int((social_properties.get(str(property_id)) or {}).get("plot_reintegration_progress", 0) or 0),
+        }
+        for property_id in seized_ids
+    ]
+    plot["clusters"] = cluster_summaries
+    strategic_goal, strategic_goal_text, goal_target_region, goal_target_property_id = _select_plot_strategic_goal(plot, next_state)
+    plot["strategic_goal"] = strategic_goal
+    plot["strategic_goal_text"] = strategic_goal_text
+    plot["goal_target_region"] = goal_target_region
+    plot["goal_target_property_id"] = goal_target_property_id
 
     eligible_players = []
     member_ids = _active_member_ids(plot, _player_index(next_state))
@@ -1801,6 +1925,12 @@ def refresh_plot_snapshot(game_state: dict) -> dict:
         "legal_targets": sorted(legal_targets, key=lambda entry: (entry.get("region") or "", int(entry.get("board_position", 0) or 0))),
         "clusters": sorted(cluster_summaries, key=lambda entry: entry.get("cluster_id") or ""),
         "victory_countdown": victory,
+        "joint_account_balance": _round(plot.get("joint_account_balance", 0), 2),
+        "joint_account_contribution_rate": _round(plot.get("joint_account_contribution_rate", 0.4), 2),
+        "joint_account_contributions": {
+            str(player_id): _round(amount, 2)
+            for player_id, amount in (plot.get("joint_account_contributions") or {}).items()
+        },
         "action_catalog": [
             {"action_type": action_type, **definition}
             for action_type, definition in PLOT_ACTION_DEFS.items()
@@ -2079,6 +2209,13 @@ def start_communist_plot(game_state: dict, *, player_id: int) -> tuple[dict, dic
             "support_generated_total": _round(initial_support, 2),
             "heat": 0.0,
             "supply": 0.0,
+            "joint_account_balance": 0.0,
+            "joint_account_contribution_rate": 0.4,
+            "joint_account_contributions": {},
+            "strategic_goal": "build_support",
+            "strategic_goal_text": "Build support across the board.",
+            "goal_target_region": None,
+            "goal_target_property_id": None,
             "members": {str(player_id): member},
             "join_invites": {},
             "join_requests": {},
@@ -2611,13 +2748,11 @@ def submit_plot_join(game_state: dict, *, player_id: int, payload: dict | None =
             contribution_cost = 100.0 if bool(member.get("prosperous_entry")) else 50.0
         if current_round in set(member.get("contribution_rounds") or []):
             raise ValueError("A member may only make one major contribution per round.")
-        if float(player.get("balance", 0) or 0) < contribution_cost:
-            raise ValueError("That player cannot afford the requested contribution.")
-        next_state, _ = spend_player_balance(next_state, player_id, contribution_cost)
-        player_lookup = _player_index(next_state)
-        player = player_lookup.get(player_id) or player
+        plot, spent_from_joint_account = _spend_joint_account_balance(plot, contribution_cost)
+        if spent_from_joint_account <= 0:
+            raise ValueError("The plot needs pooled funds before members can finance another operation.")
         member["contribution_rounds"] = sorted(set([*(member.get("contribution_rounds") or []), current_round]))
-        member["cash_contributed"] = _round(float(member.get("cash_contributed", 0) or 0) + contribution_cost, 2)
+        member["cash_contributed"] = _round(float(member.get("cash_contributed", 0) or 0) + spent_from_joint_account, 2)
         member["support_contributed"] = _round(float(member.get("support_contributed", 0) or 0) + 1.0, 2)
         if plot.get("public") and member.get("role") in {"organizer", "committed_member", "cadre", "founder"}:
             member["supply_contributed"] = _round(float(member.get("supply_contributed", 0) or 0) + 1.0, 2)
@@ -2632,14 +2767,14 @@ def submit_plot_join(game_state: dict, *, player_id: int, payload: dict | None =
             player_id=player_id,
             current_round=current_round,
             success=True,
-            summary=f"{player.get('username', 'Player')} made a political contribution to the plot.",
+            summary=f"{player.get('username', 'Player')} used pooled faction funds to organize more support.",
         )
         next_state = _set_social_properties(next_state, _social_properties(next_state), plot)
         next_state = _refresh_state(next_state)
         return next_state, {
             "action_type": "plot_contribution",
             "success": True,
-            "summary": f"{player.get('username', 'Player')} contributed to the communist plot.",
+            "summary": f"{player.get('username', 'Player')} spent joint plot funds to strengthen the faction.",
             "plot": _get_plot(next_state),
         }
 
@@ -2674,7 +2809,7 @@ def submit_plot_join(game_state: dict, *, player_id: int, payload: dict | None =
     raise ValueError("Unknown plot membership action.")
 
 
-def submit_plot_leave(game_state: dict, *, player_id: int) -> tuple[dict, dict]:
+def submit_plot_leave(game_state: dict, *, player_id: int, reason: str | None = None) -> tuple[dict, dict]:
     next_state = _refresh_state(game_state)
     current_round = _game_round(next_state)
     plot = _coerce_plot_state(_get_plot(next_state), current_round)
@@ -2684,6 +2819,9 @@ def submit_plot_leave(game_state: dict, *, player_id: int) -> tuple[dict, dict]:
     departing = dict(members.get(str(player_id)) or member)
     departing["active"] = False
     departing["defection_cooldown_until"] = current_round + 3
+    departing["left_round"] = current_round
+    if reason:
+        departing["defection_reason"] = str(reason)
     members[str(player_id)] = departing
     plot["members"] = members
     plot = _add_support(plot, -2)
@@ -2974,6 +3112,9 @@ def resolve_end_of_round_plot_state(game_state: dict) -> dict:
     social_properties = _social_properties(next_state)
     seized_ids = _seized_property_ids(next_state, social_properties)
     properties_by_id = _property_index(next_state)
+    controlled_support_gain = 0.0
+    if len(seized_ids) >= 3:
+        controlled_support_gain = 1.0 + max(0, (len(seized_ids) - 3) // 2)
     cluster_entries = list((plot.get("clusters") or []))
     cluster_size_by_property = {}
     for cluster in cluster_entries:
@@ -2995,6 +3136,8 @@ def resolve_end_of_round_plot_state(game_state: dict) -> dict:
         )
     if supply_gain > 0:
         plot = _add_supply(plot, supply_gain)
+    if controlled_support_gain > 0:
+        plot = _add_support(plot, controlled_support_gain)
 
     region_presence = []
     for region_name, region_state in (plot.get("regions") or {}).items():
@@ -3065,7 +3208,10 @@ def resolve_end_of_round_plot_state(game_state: dict) -> dict:
         player_id=None,
         current_round=current_round,
         success=True,
-        summary=f"Round-end plot resolution generated {int(supply_gain)} Supply across {len(seized_ids)} seized properties.",
+        summary=(
+            f"Round-end plot resolution generated {int(supply_gain)} Supply "
+            f"and {int(controlled_support_gain)} Support across {len(seized_ids)} seized properties."
+        ),
     )
     next_state = _set_social_properties(next_state, social_properties, plot)
     return _refresh_state(next_state)

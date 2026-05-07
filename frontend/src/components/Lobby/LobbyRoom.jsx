@@ -170,7 +170,7 @@ export default function LobbyRoom({ roomCode }) {
 
   return (
     <div className="min-h-screen bg-gray-900 text-white">
-      <div className="max-w-5xl mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-4 py-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
@@ -194,7 +194,7 @@ export default function LobbyRoom({ roomCode }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
           {/* Left: Player list + color picker */}
           <div className="lg:col-span-2 space-y-4">
             <div className="bg-gray-800 rounded-xl p-4 space-y-3">
@@ -280,11 +280,11 @@ export default function LobbyRoom({ roomCode }) {
           </div>
 
           {/* Right: Settings */}
-          <div className="bg-gray-800 rounded-xl p-4">
-            <h2 className="font-semibold text-gray-200 mb-4">
+          <div className="lg:col-span-3 bg-gray-800 rounded-xl p-5">
+            <h2 className="font-semibold text-gray-200 mb-4 text-base">
               {isHost ? 'Game Settings' : 'Settings (Read-only)'}
             </h2>
-            <div className="overflow-y-auto max-h-[calc(100vh-16rem)]">
+            <div className="overflow-y-auto max-h-[calc(100vh-14rem)]">
               <SettingsPanel
                 settings={settings}
                 onChange={handleSettingsChange}

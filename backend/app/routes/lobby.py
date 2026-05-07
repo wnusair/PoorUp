@@ -385,6 +385,7 @@ def add_bot(room_code):
                     match,
                     difficulty=data.get("difficulty"),
                     persona=data.get("persona"),
+                    archetype=data.get("archetype"),
                 )
             )
     except ValueError as exc:
@@ -426,6 +427,7 @@ def patch_bot(room_code, player_id):
             player_id,
             difficulty=data.get("difficulty"),
             persona=data.get("persona"),
+            archetype=data.get("archetype"),
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

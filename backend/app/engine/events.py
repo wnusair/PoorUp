@@ -17,9 +17,11 @@ from app.engine.economy import (
     split_development_for_repairs,
 )
 from app.engine.debt import charge_player_to_player, credit_player_with_debt_settlement, spend_player_balance
+from app.engine.liberal_democracy import get_liberal_democracy_go_salary
 from app.engine.plot import COMMUNIST_PLOT_OWNER_ID, calculate_solidarity_levy, property_is_plot_seized
 from app.engine.social import PROLETARIAT_UNION_ID, calculate_union_charge, property_income_blocked, property_is_unionized
 from app.engine.deals import apply_investment_profit_share, apply_rent_deal_effects
+from app.utils.settings import normalize_government_type
 
 RETIRED_BOARD_POSITIONS = {1, 3, 7, 8, 21, 28, 29, 33, 35, 41, 42, 43, 44, 45, 46}
 BOARD_POSITION_ORDER = tuple(position for position in range(48) if position not in RETIRED_BOARD_POSITIONS)
@@ -136,6 +138,8 @@ def resolve_space(
     # --- START (0) ---
     if position == START_POSITION:
         go_salary = float(settings.get("go_salary", 200))
+        if normalize_government_type(settings.get("government_type")) == "liberal_democracy":
+            go_salary = get_liberal_democracy_go_salary(game_state, player["id"], go_salary)
         if settings.get("double_on_go", False):
             go_salary *= 2
         game_state, credit_result = credit_player_with_debt_settlement(game_state, player["id"], go_salary)
@@ -244,6 +248,26 @@ def resolve_space(
 
     prop_type = prop.get("property_type", "property")
     owner_id = prop.get("owner_id")
+    corporate_owner_id = prop.get("corporate_owner_id")
+
+    if owner_id is None and corporate_owner_id:
+        game_state = dict(game_state)
+        game_state["pending_action"] = {
+            "type": "buy_corporate_property",
+            "player_id": player["id"],
+            "player_name": player.get("username", "Player"),
+            "property_id": prop["id"],
+            "position": position,
+            "property": dict(prop),
+            "corporation_id": corporate_owner_id,
+        }
+        logs.append({"event_type": "move", "description": f"{player.get('username','Player')} landed on corporate-owned {prop['name']} and can attempt a buyout."})
+        socketio_instance.emit(
+            "property_action_required",
+            game_state["pending_action"],
+            room=str(match_id),
+        )
+        return player, game_state, econ, logs
 
     if owner_id is None:
         game_state = dict(game_state)

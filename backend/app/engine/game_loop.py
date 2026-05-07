@@ -47,6 +47,17 @@ from app.engine.events import (
     TAX_LUXURY_POSITION,
     TAX_SUPER_POSITION,
 )
+from app.engine.liberal_democracy import (
+    AIRPORT_ABBREVIATIONS,
+    apply_government_event,
+    apply_tax_bracket_policy,
+    generate_government_event,
+    get_liberal_democracy_go_salary,
+    process_liberal_democracy_round,
+    setup_liberal_democracy_state,
+    tick_ld_market_per_turn,
+    update_political_parties,
+)
 from app.engine.taxation import (
     ensure_tax_stats,
     initialize_tax_stats,
@@ -85,14 +96,14 @@ BOARD = [
     {"position": 2,  "name": "Nairobi",             "region": "Africa",       "group_color": "#8B4513", "base_price": 60,    "type": "property"},
     {"position": 4,  "name": "Cairo",               "region": "Africa",       "group_color": "#8B4513", "base_price": 100,   "type": "property"},
     {"position": 5,  "name": "Income Tax",          "region": None,           "group_color": None,      "base_price": None,  "type": "tax"},
-    {"position": 6,  "name": "Mumbai Airport",      "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
+    {"position": 6,  "name": "BOM",                 "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
     {"position": 9,  "name": "Karachi",             "region": "South Asia",   "group_color": "#EC4899", "base_price": 120,   "type": "property"},
     {"position": 10, "name": "Dhaka",               "region": "South Asia",   "group_color": "#EC4899", "base_price": 140,   "type": "property"},
     {"position": 11, "name": "Jail / Just Visiting","region": None,           "group_color": None,      "base_price": None,  "type": "jail"},
     {"position": 12, "name": "Istanbul",            "region": "Middle East",  "group_color": "#F59E0B", "base_price": 140,   "type": "property"},
     {"position": 13, "name": "Tehran",              "region": "Middle East",  "group_color": "#F59E0B", "base_price": 160,   "type": "property"},
     {"position": 14, "name": "Riyadh",              "region": "Middle East",  "group_color": "#F59E0B", "base_price": 180,   "type": "property"},
-    {"position": 15, "name": "Dubai Airport",       "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
+    {"position": 15, "name": "DXB",                 "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
     {"position": 16, "name": "Moscow",              "region": "Eastern Europe","group_color": "#DC2626", "base_price": 180,   "type": "property"},
     {"position": 17, "name": "Community Chest",     "region": None,           "group_color": None,      "base_price": None,  "type": "community_chest"},
     {"position": 18, "name": "St. Petersburg",      "region": "Eastern Europe","group_color": "#DC2626", "base_price": 200,   "type": "property"},
@@ -101,18 +112,18 @@ BOARD = [
     {"position": 22, "name": "Chance",              "region": None,           "group_color": None,      "base_price": None,  "type": "chance"},
     {"position": 23, "name": "Paris",               "region": "Western Europe","group_color": "#EAB308", "base_price": 240,   "type": "property"},
     {"position": 24, "name": "London",              "region": "Western Europe","group_color": "#EAB308", "base_price": 260,   "type": "property"},
-    {"position": 25, "name": "London Heathrow",     "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
+    {"position": 25, "name": "LHR",                 "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
     {"position": 26, "name": "Shanghai",            "region": "China",        "group_color": "#F97316", "base_price": 260,   "type": "property"},
     {"position": 27, "name": "Beijing",             "region": "China",        "group_color": "#F97316", "base_price": 280,   "type": "property"},
     {"position": 30, "name": "Go To Jail",          "region": None,           "group_color": None,      "base_price": None,  "type": "go_to_jail"},
-    {"position": 31, "name": "Tokyo",               "region": "East Asia",    "group_color": "#06B6D4", "base_price": 300,   "type": "property"},
-    {"position": 32, "name": "Seoul",               "region": "East Asia",    "group_color": "#06B6D4", "base_price": 320,   "type": "property"},
+    {"position": 31, "name": "Tokyo",               "region": "Oceania",      "group_color": "#06B6D4", "base_price": 300,   "type": "property"},
+    {"position": 32, "name": "Seoul",               "region": "Oceania",      "group_color": "#06B6D4", "base_price": 320,   "type": "property"},
     {"position": 34, "name": "Sydney",              "region": "Oceania",      "group_color": "#06B6D4", "base_price": 320,   "type": "property"},
-    {"position": 36, "name": "JFK Airport",         "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
-    {"position": 37, "name": "São Paulo",           "region": "Latin America", "group_color": "#16A34A", "base_price": 350,   "type": "property"},
-    {"position": 38, "name": "Buenos Aires",        "region": "Latin America", "group_color": "#16A34A", "base_price": 370,   "type": "property"},
+    {"position": 36, "name": "JFK",                 "region": "Transit",      "group_color": "#6B7280", "base_price": 200,   "type": "transit"},
+    {"position": 37, "name": "São Paulo",           "region": "Americas",     "group_color": "#16A34A", "base_price": 350,   "type": "property"},
+    {"position": 38, "name": "Buenos Aires",        "region": "Americas",     "group_color": "#16A34A", "base_price": 370,   "type": "property"},
     {"position": 39, "name": "Luxury Tax",          "region": None,           "group_color": None,      "base_price": None,  "type": "tax"},
-    {"position": 40, "name": "New York",            "region": "North America", "group_color": "#16A34A", "base_price": 400,   "type": "property"},
+    {"position": 40, "name": "New York",            "region": "Americas",     "group_color": "#16A34A", "base_price": 400,   "type": "property"},
     {"position": 47, "name": "Super Tax",           "region": None,           "group_color": None,      "base_price": None,  "type": "tax"},
 ]
 
@@ -120,7 +131,7 @@ BOARD_BY_POSITION = {space["position"]: space for space in BOARD}
 
 DEFAULT_SETTINGS = {
     "starting_money": 1500,
-    "government_type": "liberal_democracy",
+    "government_type": "minarchism",
     "game_mode": "standard",
     "auction_enabled": True,
     "mortgage_enabled": True,
@@ -206,7 +217,7 @@ CHANCE_CARDS = [
     {"deck_type": "chance", "card_text": "Go Back 3 Spaces.", "effect_type": "move_back", "effect_value": 3},
     {"deck_type": "chance", "card_text": "Make general repairs — $25 per building, $100 per hotel.", "effect_type": "street_repairs", "effect_value": 100},
     {"deck_type": "chance", "card_text": "Pay $15 poor tax.", "effect_type": "pay", "effect_value": 15},
-    {"deck_type": "chance", "card_text": "Take a trip to Dubai Airport.", "effect_type": "advance_to_position", "effect_value": 15},
+    {"deck_type": "chance", "card_text": "Take a trip to DXB.", "effect_type": "advance_to_position", "effect_value": 15},
     {"deck_type": "chance", "card_text": "Take a walk to Free Space.", "effect_type": "advance_to_position", "effect_value": 20},
     {"deck_type": "chance", "card_text": "You are assessed street repairs — $40 per building, $115 per hotel.", "effect_type": "street_repairs_community", "effect_value": 115},
     {"deck_type": "chance", "card_text": "Receive consulting fee — Collect $25.", "effect_type": "collect", "effect_value": 25},
@@ -272,7 +283,6 @@ def initialize_government(gov_type: str) -> dict:
             "inflation_rate": round(random.uniform(0.018, 0.05), 4),
             "interest_rate": round(random.uniform(0.035, 0.08), 4),
             "treasury_balance": 750.0,
-            "market_confidence": round(random.uniform(64, 82), 2),
         })
 
 
@@ -399,9 +409,20 @@ def initialize_game_state(match, match_players, redis_client, socketio_instance)
             "current_value": float(prop.current_value) if prop.current_value else None,
             "dev_level": 0,
             "owner_id": None,
+            "corporate_owner_id": None,
+            "corporate_listing_price": None,
+            "corporate_rent": None,
             "is_mortgaged": False,
             "property_type": prop.property_type,
         })
+
+    if gov_type == "liberal_democracy":
+        player_states, prop_states, gov_data = setup_liberal_democracy_state(
+            player_states,
+            prop_states,
+            gov_data,
+            settings,
+        )
 
     # Randomize turn order
     turn_order = [mp.id for mp in match_players]
@@ -1063,7 +1084,7 @@ def update_approval_ratings(players: list[dict], econ: dict) -> list[dict]:
         elif gov_type == "liberal_democracy":
             stability = float(econ.get("stability", 0.5))
             inflation = float(econ.get("inflation_rate", 0.03))
-            market_confidence = float(econ.get("market_confidence", 70) or 70)
+            market_confidence = float(((econ.get("market") or {}).get("sentiment", econ.get("market_confidence", 70)) or 70))
             delta = random.uniform(-4, 4) + stability * 3.5 + (market_confidence / 100.0) * 6 - inflation * 22
             rating += delta
         elif gov_type == "social_democracy":
@@ -1262,92 +1283,99 @@ def resolve_lobbying(game_state: dict, econ: dict, settings: dict, socketio_inst
                 else:
                     success = False
                     failure_reason = "Minarchism already runs without government bailouts."
-            elif target == "market_deregulation":
+            elif target == "tax_bracket_boundary_up":
                 if gov_type == "liberal_democracy":
-                    confidence_bonus = round(min(9.0, base_value * effect_multiplier), 2)
-                    stability_penalty = round(min(0.08, 0.018 * effect_multiplier), 4)
-                    econ["market_confidence"] = round(min(95.0, float(econ.get("market_confidence", 70) or 70) + confidence_bonus), 2)
-                    econ["stability"] = round(max(0.0, float(econ.get("stability", 0.5) or 0.5) - stability_penalty), 4)
-                    effect_summary = (
-                        f"Investor mood rose by {confidence_bonus:.1f} points to {econ['market_confidence']:.1f}. "
-                        f"Stability slipped by {stability_penalty * 100:.0f} points as outside money heated the board up."
-                    )
+                    econ = apply_tax_bracket_policy(econ, mode="boundary_up")
+                    econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) + 0.006, 4)
+                    effect_summary = econ.get("tax_brackets", {}).get("last_adjustment") or "A tax-bracket boundary moved upward."
                 else:
                     success = False
-                    failure_reason = "That investor-rules option only exists in Liberal Democracy."
-            elif target == "capital_controls":
+                    failure_reason = "That tax-bracket action only exists in Liberal Democracy."
+            elif target == "tax_bracket_boundary_down":
                 if gov_type == "liberal_democracy":
-                    confidence_penalty = round(min(9.0, base_value * effect_multiplier), 2)
-                    stability_bonus = round(min(0.10, 0.028 * effect_multiplier), 4)
-                    econ["market_confidence"] = round(max(5.0, float(econ.get("market_confidence", 70) or 70) - confidence_penalty), 2)
-                    econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5) or 0.5) + stability_bonus), 4)
-                    effect_summary = (
-                        f"Investor rules tightened, lowering investor mood by {confidence_penalty:.1f} points "
-                        f"while stability improved by {stability_bonus * 100:.0f} points."
-                    )
+                    econ = apply_tax_bracket_policy(econ, mode="boundary_down")
+                    econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) - 0.006, 4)
+                    effect_summary = econ.get("tax_brackets", {}).get("last_adjustment") or "A tax-bracket boundary moved downward."
                 else:
                     success = False
-                    failure_reason = "That investor-rules option only exists in Liberal Democracy."
-            elif target == "cash_bonus_increase":
+                    failure_reason = "That tax-bracket action only exists in Liberal Democracy."
+            elif target == "tax_bracket_rate_up":
                 if gov_type == "liberal_democracy":
-                    delta = round(min(0.01, base_value * effect_multiplier), 4)
-                    stability_penalty = round(min(0.03, 0.007 * effect_multiplier), 4)
-                    econ["capital_yield_rate_policy_bonus"] = round(
-                        min(0.015, float(econ.get("capital_yield_rate_policy_bonus", 0) or 0) + delta),
-                        4,
-                    )
-                    econ["stability"] = round(max(0.0, float(econ.get("stability", 0.5) or 0.5) - stability_penalty), 4)
-                    econ = ensure_regime_economy_state(econ, settings)
-                    effect_summary = (
-                        f"Cash bonus increased by {delta * 100:.2f} points to {econ['capital_yield_rate'] * 100:.2f}%. "
-                        f"Stability slipped by {stability_penalty * 100:.0f} points."
-                    )
+                    econ = apply_tax_bracket_policy(econ, mode="rate_up")
+                    econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) - 0.012, 4)
+                    effect_summary = econ.get("tax_brackets", {}).get("last_adjustment") or "A tax-bracket rate increased."
                 else:
                     success = False
-                    failure_reason = "That cash-bonus option only exists in Liberal Democracy."
-            elif target == "cash_bonus_decrease":
+                    failure_reason = "That tax-bracket action only exists in Liberal Democracy."
+            elif target == "tax_bracket_rate_down":
                 if gov_type == "liberal_democracy":
-                    delta = round(min(0.01, base_value * effect_multiplier), 4)
-                    stability_bonus = round(min(0.04, 0.008 * effect_multiplier), 4)
-                    econ["capital_yield_rate_policy_bonus"] = round(
-                        max(-0.015, float(econ.get("capital_yield_rate_policy_bonus", 0) or 0) - delta),
-                        4,
-                    )
-                    econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5) or 0.5) + stability_bonus), 4)
-                    econ = ensure_regime_economy_state(econ, settings)
-                    effect_summary = (
-                        f"Cash bonus fell by {delta * 100:.2f} points to {econ['capital_yield_rate'] * 100:.2f}%. "
-                        f"Stability improved by {stability_bonus * 100:.0f} points."
-                    )
+                    econ = apply_tax_bracket_policy(econ, mode="rate_down")
+                    econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) + 0.012, 4)
+                    effect_summary = econ.get("tax_brackets", {}).get("last_adjustment") or "A tax-bracket rate decreased."
                 else:
                     success = False
-                    failure_reason = "That cash-bonus option only exists in Liberal Democracy."
-            elif target == "investor_mood_increase":
+                    failure_reason = "That tax-bracket action only exists in Liberal Democracy."
+            elif target == "treasury_transfer_players":
                 if gov_type == "liberal_democracy":
-                    confidence_bonus = round(min(12.0, base_value * effect_multiplier), 2)
-                    stability_penalty = round(min(0.04, 0.01 * effect_multiplier), 4)
-                    econ["market_confidence"] = round(min(95.0, float(econ.get("market_confidence", 70) or 70) + confidence_bonus), 2)
-                    econ["stability"] = round(max(0.0, float(econ.get("stability", 0.5) or 0.5) - stability_penalty), 4)
-                    effect_summary = (
-                        f"Investor mood rose by {confidence_bonus:.1f} points to {econ['market_confidence']:.1f}. "
-                        f"Stability slipped by {stability_penalty * 100:.0f} points."
-                    )
+                    treasury = float(econ.get("treasury_balance", 0) or 0)
+                    active_players = [p for p in game_state.get("players", []) if not p.get("is_bankrupt", False)]
+                    planned_transfer = round(min(160.0, base_value * effect_multiplier), 2)
+                    per_player = round(min(planned_transfer, treasury / max(1, len(active_players))), 2) if active_players else 0.0
+                    if per_player > 0 and active_players:
+                        updated_players = []
+                        for p in game_state.get("players", []):
+                            next_player = dict(p)
+                            if not next_player.get("is_bankrupt", False):
+                                next_player["balance"] = round(float(next_player.get("balance", 0) or 0) + per_player, 2)
+                            updated_players.append(next_player)
+                        game_state["players"] = updated_players
+                        total_cost = round(per_player * len(active_players), 2)
+                        econ["treasury_balance"] = round(treasury - total_cost, 2)
+                        econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5) or 0.5) + 0.02), 4)
+                        econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) + 0.01, 4)
+                        effect_summary = f"The treasury transferred ${per_player:.2f} to each active player."
+                    else:
+                        success = False
+                        failure_reason = "The treasury could not fund a player transfer."
                 else:
                     success = False
-                    failure_reason = "That investor-mood option only exists in Liberal Democracy."
-            elif target == "investor_mood_decrease":
+                    failure_reason = "That treasury-transfer action only exists in Liberal Democracy."
+            elif target == "treasury_transfer_treasury":
                 if gov_type == "liberal_democracy":
-                    confidence_penalty = round(min(12.0, base_value * effect_multiplier), 2)
-                    stability_bonus = round(min(0.05, 0.012 * effect_multiplier), 4)
-                    econ["market_confidence"] = round(max(5.0, float(econ.get("market_confidence", 70) or 70) - confidence_penalty), 2)
-                    econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5) or 0.5) + stability_bonus), 4)
-                    effect_summary = (
-                        f"Investor mood fell by {confidence_penalty:.1f} points to {econ['market_confidence']:.1f}. "
-                        f"Stability improved by {stability_bonus * 100:.0f} points."
-                    )
+                    treasury_bonus = round(base_value * effect_multiplier, 2)
+                    econ["treasury_balance"] = round(float(econ.get("treasury_balance", 0) or 0) + treasury_bonus, 2)
+                    econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5) or 0.5) + 0.03), 4)
+                    econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) + 0.018, 4)
+                    effect_summary = f"The treasury gained ${treasury_bonus:.2f} for future bailouts and transfers."
                 else:
                     success = False
-                    failure_reason = "That investor-mood option only exists in Liberal Democracy."
+                    failure_reason = "That treasury-transfer action only exists in Liberal Democracy."
+            elif target == "money_supply_expand":
+                if gov_type == "liberal_democracy":
+                    market = dict(econ.get("market") or {})
+                    market["sentiment"] = round(min(96.0, float(market.get("sentiment", econ.get("market_confidence", 70)) or econ.get("market_confidence", 70)) + 4.0), 2)
+                    econ["market"] = market
+                    econ["inflation_rate"] = round(min(2.0, float(econ.get("inflation_rate", 0.03) or 0.03) + 0.01), 4)
+                    econ["interest_rate"] = round(max(0.01, float(econ.get("interest_rate", 0.06) or 0.06) - 0.005), 4)
+                    econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) + 0.028, 4)
+                    effect_summary = "Money supply expanded, easing credit while raising inflation pressure."
+                else:
+                    success = False
+                    failure_reason = "That money-supply action only exists in Liberal Democracy."
+            elif target == "money_supply_contract":
+                if gov_type == "liberal_democracy":
+                    market = dict(econ.get("market") or {})
+                    market["sentiment"] = round(max(8.0, float(market.get("sentiment", econ.get("market_confidence", 70)) or econ.get("market_confidence", 70)) - 2.0), 2)
+                    econ["market"] = market
+                    econ["inflation_rate"] = round(max(0.0, float(econ.get("inflation_rate", 0.03) or 0.03) - 0.008), 4)
+                    econ["interest_rate"] = round(min(0.20, float(econ.get("interest_rate", 0.06) or 0.06) + 0.005), 4)
+                    econ["stability"] = round(min(1.0, float(econ.get("stability", 0.5) or 0.5) + 0.015), 4)
+                    bias_delta = 0.018 if float(econ.get("inflation_rate", 0.03) or 0.03) >= 0.08 else -0.012
+                    econ["market_policy_bias"] = round(float(econ.get("market_policy_bias", 0) or 0) + bias_delta, 4)
+                    effect_summary = "Money supply contracted, cooling inflation and tightening credit."
+                else:
+                    success = False
+                    failure_reason = "That money-supply action only exists in Liberal Democracy."
             else:
                 success = False
                 failure_reason = f"{policy.policy_name} has no effect configured."
@@ -1533,6 +1561,8 @@ def run_turn(
     # Handle passing GO
     if passed_go and settings.get("income_tax_on_pass_go", True):
         go_salary = float(settings.get("go_salary", 200))
+        if normalize_government_type(settings.get("government_type")) == "liberal_democracy":
+            go_salary = get_liberal_democracy_go_salary(game_state, player_id, go_salary)
         if settings.get("double_on_go", False):
             go_salary *= 2
         # Collect GO salary
@@ -1552,6 +1582,8 @@ def run_turn(
         game_state = decrement_rotation_deadlines(game_state, match_id, beneficiary_id=player_id)
     elif passed_go:
         go_salary = float(settings.get("go_salary", 200))
+        if normalize_government_type(settings.get("government_type")) == "liberal_democracy":
+            go_salary = get_liberal_democracy_go_salary(game_state, player_id, go_salary)
         if settings.get("double_on_go", False):
             go_salary *= 2
         game_state, credit_result = credit_player_with_debt_settlement(game_state, player_id, go_salary)
@@ -1588,7 +1620,7 @@ def run_turn(
         game_state = _add_log_entry(game_state, entry, match_id, redis_client)
 
     pending_action = game_state.get("pending_action")
-    if pending_action and pending_action.get("type") == "buy_property":
+    if pending_action and pending_action.get("type") in {"buy_property", "buy_corporate_property"}:
         game_state = dict(game_state)
         game_state["pending_turn_context"] = {
             "player_id": player_id,
@@ -1663,6 +1695,11 @@ def finalize_turn_resolution(
     game_state["econ"] = econ
     game_state = ensure_social_state(game_state)
     econ = game_state.get("econ", econ)
+
+    if normalize_government_type(settings.get("government_type")) == "liberal_democracy":
+        game_state = tick_ld_market_per_turn(game_state)
+        econ = game_state.get("econ", econ)
+
     redis_client.set(f"game:{match_id}:econ", json.dumps(econ))
     socketio_instance.emit("economy_update", {"match_id": match_id, "econ": econ}, room=str(match_id))
     socketio_instance.emit(
@@ -1836,25 +1873,53 @@ def end_turn(
                 redis_client,
             )
 
-        players, econ, capital_yield_distribution = apply_capital_yield(game_state.get("players", []), econ, settings)
-        game_state["players"] = players
-        game_state["econ"] = econ
-        if capital_yield_distribution.get("successful"):
-            yield_description = (
-                f"Players with spare cash received ${capital_yield_distribution.get('total_payout', 0):.2f} total "
-                f"at a {capital_yield_distribution.get('rate', 0) * 100:.2f}% cash bonus this round."
+        if normalize_government_type(settings.get("government_type")) == "liberal_democracy":
+            gov_event = generate_government_event()
+            game_state, gov_event = apply_government_event(game_state, gov_event)
+            # Apply stock price changes BEFORE announcing the event so any
+            # sell orders submitted after the announcement execute at new prices.
+            game_state, ld_logs = process_liberal_democracy_round(game_state)
+            game_state = update_political_parties(game_state)
+            econ = game_state.get("econ", econ)
+            # Flush updated prices to Redis before emitting the announcement so
+            # concurrent market orders load the post-update state.
+            persist_game_state(game_state, match_id, redis_client)
+            socketio_instance.emit(
+                "government_event",
+                {"match_id": match_id, "event": gov_event, "round": current_round},
+                room=str(match_id),
             )
-            game_state = _add_log_entry(
-                game_state,
-                {
-                    "event_type": "capital_yield",
-                    "description": yield_description,
-                    "round": current_round,
-                    "turn": 0,
-                },
-                match_id,
-                redis_client,
-            )
+            for entry in ld_logs:
+                game_state = _add_log_entry(
+                    game_state,
+                    {
+                        **entry,
+                        "round": current_round,
+                        "turn": 0,
+                    },
+                    match_id,
+                    redis_client,
+                )
+        else:
+            players, econ, capital_yield_distribution = apply_capital_yield(game_state.get("players", []), econ, settings)
+            game_state["players"] = players
+            game_state["econ"] = econ
+            if capital_yield_distribution.get("successful"):
+                yield_description = (
+                    f"Players with spare cash received ${capital_yield_distribution.get('total_payout', 0):.2f} total "
+                    f"at a {capital_yield_distribution.get('rate', 0) * 100:.2f}% cash bonus this round."
+                )
+                game_state = _add_log_entry(
+                    game_state,
+                    {
+                        "event_type": "capital_yield",
+                        "description": yield_description,
+                        "round": current_round,
+                        "turn": 0,
+                    },
+                    match_id,
+                    redis_client,
+                )
 
         # Approval ratings
         players = update_approval_ratings(game_state.get("players", []), econ)

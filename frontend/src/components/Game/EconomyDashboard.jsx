@@ -22,9 +22,8 @@ export default function EconomyDashboard() {
     free_parking_pot = 0,
     bailout_enabled = false,
     market_confidence = 0,
-    capital_yield_rate = 0,
-    capital_yield_reserve_floor = 200,
-    private_equity_bonus_multiplier = 1,
+    interest_rate = 0,
+    market = {},
     gov_type,
     government_type,
     round_number = 1,
@@ -32,11 +31,13 @@ export default function EconomyDashboard() {
   const governmentKey = normalizeGovernmentType(gov_type || government_type || 'liberal_democracy');
   const govLabel = GOVERNMENT_TYPES[governmentKey]?.label || governmentKey;
   const isLiberalDemocracy = governmentKey === 'liberal_democracy';
+  const marketCycle = String(market?.cycle?.phase || 'steady').replace(/_/g, ' ');
+  const marketSentiment = Number(market?.sentiment ?? market_confidence) || 0;
 
   return (
-    <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+    <div className="rounded-xl border border-blue-900/40 bg-blue-950/15 p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Economy</h3>
+        <h3 className="text-xs font-semibold text-blue-300 uppercase tracking-wider">Economy</h3>
         <span className="text-xs text-blue-400 font-medium">Round {round_number}</span>
       </div>
 
@@ -87,26 +88,26 @@ export default function EconomyDashboard() {
         <>
           <div className="flex items-center justify-between text-xs">
             <StatLabel
-              label="Investor Mood"
-              tooltip="Higher Investor Mood increases cash bonuses and build loan payback caps."
+              label="Market Phase"
+              tooltip="Growth = stock prices rising, companies doing well. Decay = stock prices falling, harder to make money."
             />
-            <span className="text-cyan-300 font-mono">{(Number(market_confidence) || 0).toFixed(1)}</span>
+            <span className={marketCycle === 'decay' ? 'text-rose-300 font-mono capitalize' : 'text-cyan-300 font-mono capitalize'}>{marketCycle === 'decay' ? 'Falling' : 'Rising'}</span>
           </div>
 
           <div className="flex items-center justify-between text-xs">
             <StatLabel
-              label="Cash Bonus"
-              tooltip={`At round end, cash kept above ${formatMoney(capital_yield_reserve_floor)} earns this bonus.`}
+              label="Market Mood"
+              tooltip="How confident investors feel right now. Higher = stocks go up more. Lower = stocks go down more."
             />
-            <span className="text-amber-300 font-mono">{((Number(capital_yield_rate) || 0) * 100).toFixed(2)}%</span>
+            <span className="text-sky-300 font-mono">{marketSentiment.toFixed(1)}/100</span>
           </div>
 
           <div className="flex items-center justify-between text-xs">
             <StatLabel
-              label="Build Loan Bonus"
-              tooltip="This increases the maximum total payback on build loans above their base cap."
+              label="Loan Rate"
+              tooltip="The interest rate on bank loans. Lower = cheaper to borrow. Higher = costs more to borrow."
             />
-            <span className="text-emerald-300 font-mono">+{Math.max(0, (Number(private_equity_bonus_multiplier) - 1) * 100).toFixed(0)}%</span>
+            <span className="text-emerald-300 font-mono">{((Number(interest_rate) || 0) * 100).toFixed(2)}%</span>
           </div>
 
 

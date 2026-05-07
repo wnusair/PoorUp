@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BoardSpace from './BoardSpace';
 import CenterLogDock from '../Log/CenterLogDock';
+import LiveStocksPanel from '../Game/LiveStocksPanel';
 import { BOARD_SPACES, needsDarkText } from '../../utils/constants';
 import { useGameStore } from '../../hooks/useGameState';
+import { normalizeGovernmentType } from '../../utils/gameState';
 import hammerAndSickle from '../../assets/white_hammer_and_sickle.png';
 
 /**
@@ -313,7 +315,9 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
     width: totalW + (BOARD_INSET * 2),
     height: totalH + (BOARD_INSET * 2),
   });
-  const { playerAnimPositions, movingPlayerId } = useGameStore();
+  const [stocksPinned, setStocksPinned] = useState(false);
+  const { playerAnimPositions, movingPlayerId, economy, settings } = useGameStore();
+  const isLiberalDemocracy = normalizeGovernmentType(economy?.gov_type || economy?.government_type || settings?.government_type || '') === 'liberal_democracy';
 
   const metrics = useMemo(
     () => buildBoardMetrics(boardSize.width, boardSize.height),
@@ -348,6 +352,14 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
     return players.find((p) => p.id === prop.owner_id) || null;
   };
 
+  const getCorporateOwner = (position) => {
+    const prop = properties[position];
+    const corporateOwnerId = prop?.corporate_owner_id;
+    if (!corporateOwnerId) return null;
+    const corporations = economy?.corporations?.by_id || economy?.corporations?.entities || {};
+    return corporations[String(corporateOwnerId)] || null;
+  };
+
   const renderSpace = (pos, orientation, isCorner = false) => {
     const space = spaceByPos[pos];
     if (!space) return null;
@@ -373,6 +385,7 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
         key={pos}
         space={mergedSpace}
         owner={getOwner(pos)}
+        corporateOwner={getCorporateOwner(pos)}
         orientation={orientation}
         isCorner={isCorner}
         onClick={onSpaceClick}
@@ -540,24 +553,59 @@ export default function GameBoard({ players = [], properties = {}, onSpaceClick 
             background: 'radial-gradient(ellipse at center, #1a1f2e 0%, #0f1319 100%)',
           }}
         >
-          <div className="absolute inset-0 flex items-center justify-center pb-[clamp(6rem,16vh,8.5rem)]">
-            <div className="text-center">
-            <div
-              className="text-transparent bg-clip-text bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 font-black tracking-wider"
-              style={{ fontSize: `${Math.max(24, Math.min(46, Math.min(metrics.innerWidth, metrics.innerHeight) * 0.095))}px` }}
-            >
-              POOR<span className="text-white">UP</span>
+          {!stocksPinned && (
+            <div className="absolute inset-0 flex items-center justify-center pb-[clamp(6rem,16vh,8.5rem)]">
+              <div className="text-center">
+                <div
+                  className="text-transparent bg-clip-text bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 font-black tracking-wider"
+                  style={{ fontSize: `${Math.max(24, Math.min(46, Math.min(metrics.innerWidth, metrics.innerHeight) * 0.095))}px` }}
+                >
+                  POOR<span className="text-white">UP</span>
+                </div>
+                <div
+                  className="mt-1 text-gray-600 tracking-widest uppercase"
+                  style={{ fontSize: `${Math.max(9, Math.min(13, Math.min(metrics.innerWidth, metrics.innerHeight) * 0.024))}px` }}
+                >
+                  Goon to Victory
+                </div>
+              </div>
             </div>
-            <div
-              className="mt-1 text-gray-600 tracking-widest uppercase"
-              style={{ fontSize: `${Math.max(9, Math.min(13, Math.min(metrics.innerWidth, metrics.innerHeight) * 0.024))}px` }}
-            >
-              Goon to Victory
-            </div>
-            </div>
-          </div>
+          )}
 
-          <CenterLogDock />
+          {stocksPinned && isLiberalDemocracy && (
+            <div className="absolute inset-0 flex overflow-hidden">
+              <div className="w-1/2 flex-shrink-0 overflow-hidden border-r border-slate-800/60 p-3">
+                <LiveStocksPanel />
+              </div>
+              <div className="flex-1 relative overflow-hidden">
+                <div className="absolute top-2 left-0 right-0 z-10 flex items-center justify-center pointer-events-none">
+                  <div className="text-center">
+                    <div
+                      className="text-transparent bg-clip-text bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 font-black tracking-wider"
+                      style={{ fontSize: `${Math.max(14, Math.min(22, Math.min(metrics?.innerWidth ?? 300, metrics?.innerHeight ?? 300) * 0.048))}px` }}
+                    >
+                      POOR<span className="text-white">UP</span>
+                    </div>
+                    <div className="text-[8px] text-gray-600 tracking-widest uppercase">Goon to Victory</div>
+                  </div>
+                </div>
+                <CenterLogDock compact={false} />
+              </div>
+            </div>
+          )}
+
+          {isLiberalDemocracy && (
+            <button
+              type="button"
+              onClick={() => setStocksPinned((v) => !v)}
+              className={`pointer-events-auto absolute right-2 top-2 z-20 rounded-full px-2.5 py-1.5 text-[11px] font-semibold transition ${stocksPinned ? 'bg-cyan-400 text-slate-950' : 'bg-slate-800/80 text-cyan-300 hover:bg-slate-700'}`}
+              title={stocksPinned ? 'Hide live stocks' : 'Pin live stocks to center'}
+            >
+              {stocksPinned ? '✕ Stocks' : '📈 Stocks'}
+            </button>
+          )}
+
+          {!stocksPinned && <CenterLogDock compact={false} />}
         </div>
 
         {/* Token overlay — rendered above all spaces, transitions between pixel coords */}

@@ -132,7 +132,7 @@ function DevelopmentMarker({ level, orientation, incidentType, unionized, econom
   );
 }
 
-function SpaceLabel({ space, owner, orientation, economy }) {
+function SpaceLabel({ space, owner, corporateOwner, orientation, economy }) {
   const isVertical = orientation === 'left' || orientation === 'right';
   const icon = SPACE_ICONS[space.type];
   const displayName = BOARD_SPACE_SHORT_NAMES[space.position] || space.name;
@@ -155,6 +155,7 @@ function SpaceLabel({ space, owner, orientation, economy }) {
     const plotSeized = Boolean(space.social_plot_seized);
     const seizedClusterSize = Number(space.social_plot_cluster_size ?? 0) || 0;
     const isClusterSeizure = seizedClusterSize > 1;
+    const corporateSymbol = corporateOwner?.stock_symbol || corporateOwner?.asset_key || '';
 
     if (plotSeized) {
       return (
@@ -212,6 +213,21 @@ function SpaceLabel({ space, owner, orientation, economy }) {
               {owner.username?.[0]?.toUpperCase() || '?'}
             </div>
           )}
+          {!owner && corporateOwner && !unionized && incidentType !== 'revolution' && (
+            <div
+              className="flex items-center justify-center rounded-sm border border-white/30 text-[0.42rem] font-bold shadow-sm"
+              style={{
+                minWidth: isVertical ? '28px' : '34px',
+                height: isVertical ? '14px' : '16px',
+                letterSpacing: '0',
+                backgroundColor: corporateOwner.color_hex || '#06b6d4',
+                color: needsDarkText(corporateOwner.color_hex || '#06b6d4') ? '#111' : '#fff',
+              }}
+              title={`Owned by ${corporateOwner.name || corporateSymbol || 'Corporation'} · Rent ${space.corporate_rent != null ? `$${Number(space.corporate_rent).toFixed(0)}` : ''}`}
+            >
+              {corporateSymbol ? corporateSymbol.slice(0, 4).toUpperCase() : (corporateOwner.name || 'CORP').slice(0, 4).toUpperCase()}
+            </div>
+          )}
           {!owner && space.social_unionized && (
             <div
               className="flex items-center justify-center rounded-sm border border-white/20 bg-cyan-300 text-[0.42rem] font-bold text-slate-950 shadow-sm"
@@ -224,9 +240,14 @@ function SpaceLabel({ space, owner, orientation, economy }) {
               U
             </div>
           )}
-          {space.basePrice && (
-            <span style={{ fontSize: isVertical ? '0.52rem' : '0.58rem', color: '#9ca3af', fontWeight: 600 }}>
-              ${space.basePrice}
+          {(space.corporate_rent != null || space.basePrice) && (
+            <span
+              title={space.corporate_rent != null ? `Rent $${Number(space.corporate_rent).toFixed(0)} · Buy $${Number(space.corporate_listing_price || space.basePrice).toFixed(0)}` : `Price $${space.basePrice}`}
+              style={{ fontSize: isVertical ? '0.52rem' : '0.58rem', color: space.corporate_rent != null ? (corporateOwner?.color_hex || '#06b6d4') : '#9ca3af', fontWeight: 600 }}
+            >
+              {space.corporate_rent != null
+                ? `R$${Number(space.corporate_rent).toFixed(0)}`
+                : `$${space.basePrice}`}
             </span>
           )}
         </div>
@@ -276,6 +297,7 @@ function SpaceLabel({ space, owner, orientation, economy }) {
 export default function BoardSpace({
   space,
   owner = null,
+  corporateOwner = null,
   orientation = 'bottom',
   isCorner = false,
   onClick,
@@ -317,7 +339,7 @@ export default function BoardSpace({
     >
       <ControlBanner plotSeized={plotSeized} unionized={unionized && !plotSeized} />
       <SocialMarker space={space} />
-      <SpaceLabel space={space} owner={owner} orientation={orientation} economy={economy} />
+      <SpaceLabel space={space} owner={owner} corporateOwner={corporateOwner} orientation={orientation} economy={economy} />
     </div>
   );
 }

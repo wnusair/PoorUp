@@ -55,12 +55,12 @@ export default function PlayerSlot({ player, isMe, isHost, slotIndex, canRemoveB
               {player.bot_difficulty_label || player.bot_difficulty}
             </span>
             <span className="rounded-full border border-indigo-900/70 bg-indigo-950/30 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-200">
-              {player.bot_persona_label || player.bot_persona}
+              {player.bot_archetype_label || player.bot_archetype || player.bot_persona_label || player.bot_persona}
             </span>
           </div>
         )}
-        {player.is_bot && player.bot_persona_description && (
-          <p className="mt-2 text-xs text-gray-400 truncate">{player.bot_persona_description}</p>
+        {player.is_bot && (player.bot_archetype_description || player.bot_persona_description) && (
+          <p className="mt-2 text-xs text-gray-400 truncate">{player.bot_archetype_description || player.bot_persona_description}</p>
         )}
       </div>
 

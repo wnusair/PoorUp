@@ -326,10 +326,10 @@ class SocialEngineTests(unittest.TestCase):
             'player_totals': {},
             'resolved_history': [],
             'policy_pools': {
-                'market_deregulation': {
-                    'target': 'market_deregulation',
-                    'policy_name': 'Market Deregulation',
-                    'target_stat': 'market_deregulation',
+                'money_supply_expand': {
+                    'target': 'money_supply_expand',
+                    'policy_name': 'Expand Money Supply',
+                    'target_stat': 'money_supply_expand',
                     'cost_hint': 280,
                     'pool_total': 280,
                     'contributors': [{'player_id': 1, 'username': 'Atlas', 'contribution': 280}],
@@ -342,8 +342,8 @@ class SocialEngineTests(unittest.TestCase):
 
         self.assertGreaterEqual(hotspot['tension'], 70.0)
         self.assertEqual(hotspot['dominant_grievance'], 'shareholder_pressure')
-        self.assertIn('capital_controls', hotspot['recommended_lobby_targets'])
-        self.assertTrue(any(target['target'] == 'market_deregulation' for target in hotspot['hostile_lobby_targets']))
+        self.assertIn('money_supply_contract', hotspot['recommended_lobby_targets'])
+        self.assertTrue(any(target['target'] == 'money_supply_expand' for target in hotspot['hostile_lobby_targets']))
 
     def test_minarchism_overdevelopment_stays_local_and_avoids_mass_revolution(self):
         owner = make_player(1, 'Atlas', 1800)

@@ -6,6 +6,7 @@ import math
 import random
 from typing import Any
 
+from app.engine.liberal_democracy import ensure_liberal_democracy_econ, portfolio_market_value
 from app.engine.taxation import build_welfare_distribution
 from app.utils.settings import normalize_government_type
 
@@ -101,59 +102,17 @@ def ensure_regime_economy_state(econ: dict | None, settings: dict | None = None)
     next_econ["government_type"] = government_type
 
     if government_type == "liberal_democracy":
-        try:
-            go_salary = float((settings or {}).get("go_salary", 200) or 200)
-        except (TypeError, ValueError):
-            go_salary = 200.0
-
-        next_econ["market_confidence"] = round(
-            clamp_number(
-                float(next_econ.get("market_confidence", LIBERAL_DEMOCRACY_DEFAULT_MARKET_CONFIDENCE) or LIBERAL_DEMOCRACY_DEFAULT_MARKET_CONFIDENCE),
-                LIBERAL_DEMOCRACY_MIN_MARKET_CONFIDENCE,
-                LIBERAL_DEMOCRACY_MAX_MARKET_CONFIDENCE,
-            ),
-            2,
-        )
-        next_econ["capital_yield_rate_policy_bonus"] = round(
-            clamp_number(
-                float(next_econ.get("capital_yield_rate_policy_bonus", 0.0) or 0.0),
-                LIBERAL_DEMOCRACY_MIN_CAPITAL_YIELD_POLICY_BONUS,
-                LIBERAL_DEMOCRACY_MAX_CAPITAL_YIELD_POLICY_BONUS,
-            ),
-            4,
-        )
-        next_econ["capital_yield_cap_per_player"] = round(
-            max(
-                60.0,
-                float(
-                    next_econ.get(
-                        "capital_yield_cap_per_player",
-                        LIBERAL_DEMOCRACY_DEFAULT_CAPITAL_YIELD_CAP,
-                    )
-                    or LIBERAL_DEMOCRACY_DEFAULT_CAPITAL_YIELD_CAP
-                ),
-            ),
-            2,
-        )
-        next_econ["capital_yield_reserve_floor"] = round(
-            max(
-                100.0,
-                float(
-                    next_econ.get(
-                        "capital_yield_reserve_floor",
-                        max(LIBERAL_DEMOCRACY_DEFAULT_RESERVE_FLOOR, go_salary * 0.75),
-                    )
-                    or max(LIBERAL_DEMOCRACY_DEFAULT_RESERVE_FLOOR, go_salary * 0.75)
-                ),
-            ),
-            2,
-        )
-        next_econ["capital_yield_rate"] = derive_liberal_democracy_capital_yield_rate(next_econ)
-        next_econ["private_equity_bonus_multiplier"] = derive_private_equity_bonus_multiplier(next_econ)
-        next_econ["capital_yield_last_round"] = round(
-            max(0.0, float(next_econ.get("capital_yield_last_round", 0) or 0)),
-            2,
-        )
+        next_econ.setdefault("bailout_enabled", True)
+        next_econ.setdefault("welfare_payout", round(float(next_econ.get("welfare_payout", 18.0) or 18.0), 2))
+        next_econ.setdefault("tax_multiplier", round(float(next_econ.get("tax_multiplier", 0.22) or 0.22), 3))
+        next_econ.setdefault("stability", round(float(next_econ.get("stability", 0.74) or 0.74), 4))
+        next_econ.setdefault("inflation_rate", round(float(next_econ.get("inflation_rate", 0.03) or 0.03), 4))
+        next_econ.setdefault("interest_rate", round(float(next_econ.get("interest_rate", 0.055) or 0.055), 4))
+        next_econ.setdefault("treasury_balance", round(float(next_econ.get("treasury_balance", 750.0) or 750.0), 2))
+        next_econ["capital_yield_rate_policy_bonus"] = 0.0
+        next_econ = ensure_liberal_democracy_econ(next_econ, settings)
+        next_econ["capital_yield_cap_per_player"] = 0.0
+        next_econ["capital_yield_reserve_floor"] = 0.0
         return next_econ
 
     next_econ["market_confidence"] = 0.0
@@ -381,7 +340,10 @@ def calculate_net_worth(player: dict, game_state: dict) -> float:
         for p in props
         if p.get("is_mortgaged", False)
     )
-    return round(balance + prop_value - mortgage_debt, 2)
+    bank_savings = float(player.get("bank_savings_balance", 0) or 0)
+    bank_loans = float(player.get("bank_loan_principal", 0) or 0)
+    market_value = portfolio_market_value(player, ensure_regime_economy_state(game_state.get("econ", {}), game_state.get("settings", {})))
+    return round(balance + bank_savings + market_value + prop_value - mortgage_debt - bank_loans, 2)
 
 
 def apply_capital_yield(
@@ -403,48 +365,9 @@ def apply_capital_yield(
     if resolve_government_type(econ=next_econ, settings=settings) != "liberal_democracy":
         return players, next_econ, distribution
 
-    rate = float(next_econ.get("capital_yield_rate", 0) or 0)
-    cap_per_player = float(next_econ.get("capital_yield_cap_per_player", 0) or 0)
-    reserve_floor = float(next_econ.get("capital_yield_reserve_floor", 0) or 0)
-    market_confidence = float(next_econ.get("market_confidence", 0) or 0)
-
-    if rate <= 0 or market_confidence < 18:
-        distribution["reason"] = "Investor mood is too weak for the cash bonus this round."
-        next_econ["capital_yield_last_round"] = 0.0
-        return players, next_econ, distribution
-
-    updated_players = []
-    total_payout = 0.0
-    eligible_count = 0
-
-    for player in players:
-        next_player = dict(player)
-        if next_player.get("is_bankrupt", False):
-            updated_players.append(next_player)
-            continue
-
-        balance = float(next_player.get("balance", 0) or 0)
-        investable_cash = max(0.0, balance - reserve_floor)
-        if investable_cash <= 0:
-            updated_players.append(next_player)
-            continue
-
-        eligible_count += 1
-        payout = round(min(cap_per_player, investable_cash * rate), 2)
-        if payout > 0:
-            next_player["balance"] = round(balance + payout, 2)
-            total_payout = round(total_payout + payout, 2)
-
-        updated_players.append(next_player)
-
-    next_econ["capital_yield_last_round"] = round(total_payout, 2)
-    distribution.update({
-        "successful": total_payout > 0,
-        "eligible_count": eligible_count,
-        "total_payout": round(total_payout, 2),
-        "reason": "Players with spare cash received the round-end cash bonus." if total_payout > 0 else "No player kept enough cash above the safe reserve.",
-    })
-    return updated_players, next_econ, distribution
+    distribution["reason"] = "The old cash bonus has been retired in this Liberal Democracy mode."
+    next_econ["capital_yield_last_round"] = 0.0
+    return players, next_econ, distribution
 
 
 # ---------------------------------------------------------------------------
@@ -728,13 +651,14 @@ def drift_economy(
     welfare_rate = max(0.0, min(100.0, float(econ.get("welfare_payout", 0) or 0)))
 
     market_confidence = float(econ.get("market_confidence", LIBERAL_DEMOCRACY_DEFAULT_MARKET_CONFIDENCE) or LIBERAL_DEMOCRACY_DEFAULT_MARKET_CONFIDENCE)
+    market_sentiment = float(((econ.get("market") or {}).get("sentiment", market_confidence) or market_confidence))
 
     if gov_type == "minarchism":
         stability += random.uniform(-0.01, 0.004)
     elif gov_type == "liberal_democracy":
         stability += (
             -gini * 0.042
-            + (market_confidence / 100.0) * 0.05
+            + (market_sentiment / 100.0) * 0.05
             + (welfare_rate / 100.0) * 0.025
             + random.uniform(-0.016, 0.014)
         )
@@ -773,8 +697,8 @@ def drift_economy(
             (recent_bailout_count * 1.1)
             + (recent_bailout_amount / max(300.0, active_player_count * 180.0)),
         )
-        confidence_reversion = (LIBERAL_DEMOCRACY_MARKET_CONFIDENCE_DRIFT_TARGET - market_confidence) * 0.10
-        market_confidence += (
+        confidence_reversion = (LIBERAL_DEMOCRACY_MARKET_CONFIDENCE_DRIFT_TARGET - market_sentiment) * 0.10
+        market_sentiment += (
             confidence_reversion
             + (float(econ.get("stability", 0.70) or 0.70) * 2.8)
             + (treasury_support * 0.75)
@@ -788,12 +712,15 @@ def drift_economy(
         )
         econ["market_confidence"] = round(
             clamp_number(
-                market_confidence,
+                market_sentiment,
                 LIBERAL_DEMOCRACY_MIN_MARKET_CONFIDENCE,
                 LIBERAL_DEMOCRACY_MAX_MARKET_CONFIDENCE,
             ),
             2,
         )
+        market = dict(econ.get("market") or {})
+        market["sentiment"] = econ["market_confidence"]
+        econ["market"] = market
 
     # Approval rating updates per gov type handled in game_loop
     return ensure_regime_economy_state(econ, settings)

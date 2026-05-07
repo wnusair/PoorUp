@@ -379,6 +379,88 @@ DEFAULT_PERSONALITY_BY_DIFFICULTY = {
     "expert": "leverage_architect",
 }
 
+ARCHETYPE_PERSONALITY_BY_DIFFICULTY = {
+    "minarchist": {
+        "easy": "rule_follower",
+        "normal": "set_hunter",
+        "hard": "expansionist",
+        "expert": "board_strangler",
+    },
+    "liberal_democrat": {
+        "easy": "steady_collector",
+        "normal": "balanced_operator",
+        "hard": "policy_shaper",
+        "expert": "leverage_architect",
+    },
+    "social_democrat": {
+        "easy": "steady_collector",
+        "normal": "welfare_optimizer",
+        "hard": "policy_shaper",
+        "expert": "treasury_predator",
+    },
+}
+
+BOT_ARCHETYPES = {
+    "minarchist": {
+        "key": "minarchist",
+        "label": "Minarchist",
+        "short_description": "Values private ownership, lighter state action, and direct board pressure over redistribution.",
+        "example_behaviors": [
+            "Buys property aggressively when it strengthens a local board edge.",
+            "Prefers leaner public spending and lighter intervention.",
+            "Tries to win through property denial and direct rent pressure.",
+        ],
+    },
+    "liberal_democrat": {
+        "key": "liberal_democrat",
+        "label": "Liberal Democrat",
+        "short_description": "Focuses on portfolios, jobs, bank leverage, corporate buyouts, and market timing in Liberal Democracy.",
+        "example_behaviors": [
+            "Uses savings, loans, and market orders to compound wealth.",
+            "Buys out corporate land when the long-term upside is coherent.",
+            "Treats taxes, treasury policy, and money supply as investment signals.",
+        ],
+    },
+    "social_democrat": {
+        "key": "social_democrat",
+        "label": "Social Democrat",
+        "short_description": "Balances growth with welfare, tax shaping, treasury repair, and broad stability management.",
+        "example_behaviors": [
+            "Leans on welfare and treasury health to stabilize risky positions.",
+            "Uses lobbying to shape relief, tax, and bailout outcomes.",
+            "Prefers resilient lines over the most explosive short-term gambles.",
+        ],
+    },
+}
+
+BOT_ARCHETYPE_ALIASES = {
+    "minarchist": "minarchist",
+    "minarchism": "minarchist",
+    "minarchy": "minarchist",
+    "liberal_democrat": "liberal_democrat",
+    "liberal_democracy": "liberal_democrat",
+    "liberal_democracy_bot": "liberal_democrat",
+    "liberal_democrat_bot": "liberal_democrat",
+    "liberal_democrat_archetype": "liberal_democrat",
+    "social_democrat": "social_democrat",
+    "social_democracy": "social_democrat",
+    "social_democracy_bot": "social_democrat",
+}
+
+PERSONALITY_TO_ARCHETYPE = {
+    "steady_collector": "liberal_democrat",
+    "rule_follower": "minarchist",
+    "balanced_operator": "liberal_democrat",
+    "welfare_optimizer": "social_democrat",
+    "set_hunter": "minarchist",
+    "expansionist": "minarchist",
+    "policy_shaper": "liberal_democrat",
+    "denialist": "minarchist",
+    "leverage_architect": "liberal_democrat",
+    "treasury_predator": "social_democrat",
+    "board_strangler": "minarchist",
+}
+
 LEGACY_PERSONALITY_MAP = {
     "balance_sheet": "balanced_operator",
     "expansionist": "expansionist",
@@ -424,6 +506,44 @@ def normalize_bot_difficulty(raw_value: Any, *, fallback: str = "normal") -> str
     if normalized:
         return normalized
     return fallback
+
+
+def normalize_bot_archetype(raw_value: Any, *, fallback: str | None = "liberal_democrat") -> str | None:
+    key = _normalize_key(raw_value)
+    if not key:
+        return fallback
+
+    normalized = BOT_ARCHETYPE_ALIASES.get(key)
+    if normalized:
+        return normalized
+
+    personality = normalize_bot_personality(key, fallback_persona=False)
+    if personality:
+        return PERSONALITY_TO_ARCHETYPE.get(personality, fallback)
+
+    return fallback
+
+
+def infer_archetype_from_personality(personality: Any) -> str:
+    normalized_personality = normalize_bot_personality(personality, fallback_persona=True)
+    return PERSONALITY_TO_ARCHETYPE.get(normalized_personality, "liberal_democrat")
+
+
+def choose_default_archetype(difficulty: str = "normal", seat_index: int = 0) -> str:
+    normalized_difficulty = normalize_bot_difficulty(difficulty)
+    archetypes = list(BOT_ARCHETYPES.keys())
+    if not archetypes:
+        return "liberal_democrat"
+    return archetypes[max(0, seat_index) % len(archetypes)] if normalized_difficulty in BOT_DIFFICULTIES else "liberal_democrat"
+
+
+def get_default_personality_for_archetype(archetype: Any, difficulty: Any) -> str:
+    normalized_archetype = normalize_bot_archetype(archetype, fallback="liberal_democrat") or "liberal_democrat"
+    normalized_difficulty = normalize_bot_difficulty(difficulty)
+    return (
+        ARCHETYPE_PERSONALITY_BY_DIFFICULTY.get(normalized_archetype, {}).get(normalized_difficulty)
+        or DEFAULT_PERSONALITY_BY_DIFFICULTY[normalized_difficulty]
+    )
 
 
 def infer_legacy_difficulty(raw_personality: Any) -> str:
@@ -493,19 +613,43 @@ def choose_default_personality(difficulty: str = "normal", seat_index: int = 0) 
 
 
 def validate_bot_configuration(difficulty: Any, personality: Any) -> tuple[str, str]:
+    normalized_difficulty, normalized_personality, _ = resolve_bot_configuration(
+        difficulty,
+        selection=personality,
+    )
+    return normalized_difficulty, normalized_personality
+
+
+def resolve_bot_configuration(
+    difficulty: Any,
+    *,
+    selection: Any = None,
+    archetype: Any = None,
+) -> tuple[str, str, str]:
     normalized_difficulty = normalize_bot_difficulty(difficulty)
+    explicit_archetype = normalize_bot_archetype(archetype, fallback=None)
     normalized_personality = normalize_bot_personality(
-        personality,
+        selection,
         difficulty=normalized_difficulty,
         fallback_persona=False,
     )
+    resolved_archetype = explicit_archetype
+    if normalized_personality is not None:
+        resolved_archetype = resolved_archetype or infer_archetype_from_personality(normalized_personality)
+    else:
+        resolved_archetype = resolved_archetype or normalize_bot_archetype(selection, fallback=None)
+        if resolved_archetype is not None:
+            normalized_personality = get_default_personality_for_archetype(
+                resolved_archetype,
+                normalized_difficulty,
+            )
     if normalized_personality is None:
-        raise ValueError("Select a valid bot personality.")
+        raise ValueError("Select a valid bot archetype.")
     if not is_personality_allowed_for_difficulty(normalized_personality, normalized_difficulty):
         raise ValueError(
             f"{normalized_personality.replace('_', ' ').title()} is not available for {normalized_difficulty} difficulty."
         )
-    return normalized_difficulty, normalized_personality
+    return normalized_difficulty, normalized_personality, resolved_archetype or infer_archetype_from_personality(normalized_personality)
 
 
 def get_public_difficulty_options() -> list[dict[str, Any]]:
@@ -520,19 +664,26 @@ def get_public_difficulty_options() -> list[dict[str, Any]]:
     ]
 
 
-def get_public_personality_options(*, difficulty: str | None = None) -> list[dict[str, Any]]:
+def get_public_archetype_options(*, difficulty: str | None = None) -> list[dict[str, Any]]:
     normalized_difficulty = normalize_bot_difficulty(difficulty or "normal") if difficulty else None
     options = []
-    for metadata in BOT_PERSONALITIES.values():
-        if normalized_difficulty and normalized_difficulty not in metadata["allowed_difficulties"]:
-            continue
+    for metadata in BOT_ARCHETYPES.values():
+        mapped_personality = (
+            get_default_personality_for_archetype(metadata["key"], normalized_difficulty or "normal")
+            if normalized_difficulty
+            else get_default_personality_for_archetype(metadata["key"], "normal")
+        )
+        personality_meta = BOT_PERSONALITIES[mapped_personality]
         options.append({
             "key": metadata["key"],
             "label": metadata["label"],
-            "allowed_difficulties": list(metadata["allowed_difficulties"]),
             "short_description": metadata["short_description"],
             "example_behaviors": list(metadata["example_behaviors"]),
-            "preferred_doctrines": list(metadata["preferred_doctrines"]),
+            "preferred_doctrines": list(personality_meta["preferred_doctrines"]),
+            "mapped_personality_by_difficulty": {
+                difficulty_key: get_default_personality_for_archetype(metadata["key"], difficulty_key)
+                for difficulty_key in BOT_DIFFICULTIES
+            },
         })
     return options
 
@@ -540,11 +691,11 @@ def get_public_personality_options(*, difficulty: str | None = None) -> list[dic
 def get_public_bot_catalog() -> dict[str, Any]:
     return {
         "difficulties": get_public_difficulty_options(),
-        "personalities": get_public_personality_options(),
+        "archetypes": get_public_archetype_options(),
         "defaults": {
             "difficulty": "normal",
-            "personality_by_difficulty": {
-                difficulty: choose_default_personality(difficulty)
+            "archetype_by_difficulty": {
+                difficulty: choose_default_archetype(difficulty)
                 for difficulty in BOT_DIFFICULTIES
             },
         },
@@ -559,12 +710,20 @@ def build_public_bot_metadata(bot_profile: dict[str, Any] | None) -> dict[str, A
         difficulty=difficulty,
         fallback_persona=True,
     )
+    archetype = normalize_bot_archetype(
+        profile.get("archetype"),
+        fallback=infer_archetype_from_personality(personality),
+    ) or infer_archetype_from_personality(personality)
     difficulty_meta = BOT_DIFFICULTIES[difficulty]
     personality_meta = BOT_PERSONALITIES[personality]
+    archetype_meta = BOT_ARCHETYPES[archetype]
     doctrine = profile.get("doctrine") or personality_meta["preferred_doctrines"][0]
     return {
         "bot_difficulty": difficulty,
         "bot_difficulty_label": difficulty_meta["label"],
+        "bot_archetype": archetype,
+        "bot_archetype_label": archetype_meta["label"],
+        "bot_archetype_description": archetype_meta["short_description"],
         "bot_persona": personality,
         "bot_persona_label": personality_meta["label"],
         "bot_persona_description": personality_meta["short_description"],

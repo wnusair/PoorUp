@@ -44,20 +44,23 @@ function setLobbyStore(partial = {}) {
       bot_setup: {
         defaults: {
           difficulty: 'normal',
-          personality_by_difficulty: { normal: 'balanced' },
+          archetype_by_difficulty: { normal: 'liberal_democrat' },
         },
         difficulties: [
           { key: 'easy', label: 'Easy', summary: 'Low pressure.' },
           { key: 'normal', label: 'Normal', summary: 'Balanced.' },
         ],
-        personalities: [
+        archetypes: [
           {
-            key: 'balanced',
-            label: 'Balanced',
-            short_description: 'Balanced play.',
+            key: 'liberal_democrat',
+            label: 'Liberal Democrat',
+            short_description: 'Balanced market-first play.',
             example_behaviors: ['Builds steadily.'],
-            preferred_doctrines: ['default'],
-            allowed_difficulties: ['easy', 'normal'],
+            preferred_doctrines: ['capital_markets_arbitrage'],
+            default_personality_by_difficulty: {
+              easy: 'steady_collector',
+              normal: 'balanced',
+            },
           },
         ],
       },
@@ -85,6 +88,12 @@ function setLobbyStore(partial = {}) {
   });
 }
 
+function flushPromises() {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
 
 describe('LobbyRoom', () => {
   beforeEach(() => {
@@ -106,19 +115,23 @@ describe('LobbyRoom', () => {
       configurable: true,
     });
 
-    setLobbyStore();
+    act(() => {
+      setLobbyStore();
+    });
   });
 
   afterEach(() => {
-    useGameStore.setState({
-      lobbyData: null,
-      players: [],
-      settings: {},
-      takenColors: [],
-      myPlayerId: null,
-      gamePhase: 'lobby',
-      roomCode: null,
-      matchId: null,
+    act(() => {
+      useGameStore.setState({
+        lobbyData: null,
+        players: [],
+        settings: {},
+        takenColors: [],
+        myPlayerId: null,
+        gamePhase: 'lobby',
+        roomCode: null,
+        matchId: null,
+      });
     });
   });
 
@@ -149,15 +162,18 @@ describe('LobbyRoom', () => {
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Bot Setup' }));
+      await flushPromises();
     });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Add Bots' }));
+      await mockedLobbyAddBot.mock.results[0]?.value;
+      await flushPromises();
     });
 
     await waitFor(() => {
       expect(mockedLobbyAddBot).toHaveBeenCalledWith(
         'ABCD',
-        expect.objectContaining({ count: 1, difficulty: 'normal', persona: 'balanced' }),
+        expect.objectContaining({ count: 1, difficulty: 'normal', archetype: 'liberal_democrat' }),
       );
     });
 
@@ -194,6 +210,8 @@ describe('LobbyRoom', () => {
 
     await act(async () => {
       fireEvent.click(screen.getByTitle('#4CAF50'));
+      await mockedLobbyUpdateColor.mock.results[0]?.value;
+      await flushPromises();
     });
 
     expect(mockedLobbyUpdateColor).toHaveBeenCalledWith('ABCD', '#4CAF50');
@@ -229,6 +247,8 @@ describe('LobbyRoom', () => {
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Mark Ready' }));
+      await mockedLobbySetReady.mock.results[0]?.value;
+      await flushPromises();
     });
 
     expect(mockedLobbySetReady).toHaveBeenCalledWith('ABCD', true);

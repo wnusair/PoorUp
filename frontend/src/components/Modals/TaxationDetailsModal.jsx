@@ -344,7 +344,10 @@ function PlayerNetWorthChart({ data }) {
 function OverviewTab({ economy, settings, welfareProjection, taxStats, governmentLabel, governmentType }) {
   const [isBudgetChartExpanded, setIsBudgetChartExpanded] = useState(false);
   const isLiberalDemocracy = governmentType === 'liberal_democracy';
-  const capitalYieldReserveFloor = numberValue(economy?.capital_yield_reserve_floor, numberValue(settings?.go_salary, 200));
+  const market = economy?.market || {};
+  const marketCyclePhase = String(market?.cycle?.phase || 'steady').replace(/_/g, ' ');
+  const marketSentiment = numberValue(market?.sentiment ?? economy?.market_confidence, 0);
+  const interestRate = numberValue(economy?.interest_rate, 0);
   const budgetHistory = useMemo(
     () => buildBudgetHistorySeries(taxStats, economy),
     [taxStats, economy],
@@ -364,12 +367,13 @@ function OverviewTab({ economy, settings, welfareProjection, taxStats, governmen
   const budgetHistoryMessage = budgetHistory.length > budgetHistoryLimit
     ? `Showing the most recent ${visibleBudgetHistory.length} of ${budgetHistory.length} recorded rounds.${isBudgetChartExpanded ? '' : ' Expand the graph to inspect up to 100 rounds.'}`
     : `Showing ${budgetHistory.length} recorded round${budgetHistory.length === 1 ? '' : 's'}.`;
-
-  const overviewTooltips = {
-    'Investor Mood': 'Higher Investor Mood increases cash bonuses and build loan payback caps.',
-    'Cash Bonus': `At round end, cash kept above ${formatExactMoney(capitalYieldReserveFloor)} earns this bonus.`,
-    'Build Loan Bonus': 'This increases the maximum total payback on build loans above their base cap.',
-  };
+  const overviewTooltips = isLiberalDemocracy
+    ? {
+      'Market Cycle': 'The current market regime inferred from fiscal pressure, monetary policy, inflation, and stability.',
+      'Market Sentiment': 'A compact read on risk appetite across stocks and corporate pricing.',
+      'Interest Rate': 'The economy-wide rate used by savings and loans.',
+    }
+    : {};
 
   const ruleRows = [
     ['Government', governmentLabel],
@@ -378,9 +382,9 @@ function OverviewTab({ economy, settings, welfareProjection, taxStats, governmen
     ['Tax Multiplier', `${numberValue(economy?.tax_multiplier, 0).toFixed(2)}x`],
     ...(isLiberalDemocracy
       ? [
-        ['Investor Mood', `${numberValue(economy?.market_confidence, 0).toFixed(1)}`],
-        ['Cash Bonus', `${(numberValue(economy?.capital_yield_rate, 0) * 100).toFixed(2)}%`],
-        ['Build Loan Bonus', `+${((numberValue(economy?.private_equity_bonus_multiplier, 1) - 1) * 100).toFixed(0)}%`],
+        ['Market Cycle', marketCyclePhase],
+        ['Market Sentiment', `${marketSentiment.toFixed(1)}`],
+        ['Interest Rate', `${(interestRate * 100).toFixed(2)}%`],
       ]
       : []),
     ['Welfare Target', formatExactMoney(welfareProjection.targetBalance)],
@@ -393,18 +397,21 @@ function OverviewTab({ economy, settings, welfareProjection, taxStats, governmen
 
   return (
     <div className="space-y-6">
-      <div className={`grid gap-4 ${isLiberalDemocracy ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+      <div className={`grid gap-4 ${isLiberalDemocracy ? 'lg:grid-cols-6' : 'lg:grid-cols-4'}`}>
         <MetricCard label="Government" value={governmentLabel} tone="text-cyan-300" />
         <MetricCard label="Treasury" value={formatExactMoney(economy?.treasury_balance || 0)} tone="text-amber-300" />
         {isLiberalDemocracy && (
-          <MetricCard label={<span className="inline-flex items-center gap-1"><span>Investor Mood</span><HelpTooltip content={overviewTooltips['Investor Mood']} label="Investor Mood help" /></span>} value={numberValue(economy?.market_confidence, 0).toFixed(1)} tone="text-sky-300" />
+          <MetricCard label="Market Cycle" value={marketCyclePhase} tone={marketCyclePhase === 'decay' ? 'text-rose-300' : 'text-sky-300'} />
+        )}
+        {isLiberalDemocracy && (
+          <MetricCard label="Interest Rate" value={`${(interestRate * 100).toFixed(2)}%`} tone="text-violet-300" />
         )}
         <MetricCard
-          label={isLiberalDemocracy ? <span className="inline-flex items-center gap-1"><span>Cash Bonus</span><HelpTooltip content={overviewTooltips['Cash Bonus']} label="Cash Bonus help" /></span> : 'Welfare Rate'}
+          label={isLiberalDemocracy ? 'Market Sentiment' : 'Welfare Rate'}
           value={isLiberalDemocracy
-            ? `${(numberValue(economy?.capital_yield_rate, 0) * 100).toFixed(2)}%`
+            ? marketSentiment.toFixed(1)
             : `${numberValue(economy?.welfare_payout, 0).toFixed(1)}%`}
-          tone={isLiberalDemocracy ? 'text-amber-300' : 'text-emerald-300'}
+          tone={isLiberalDemocracy ? 'text-sky-300' : 'text-emerald-300'}
         />
         <MetricCard label="Welfare Rate" value={`${numberValue(economy?.welfare_payout, 0).toFixed(1)}%`} tone="text-emerald-300" />
         <MetricCard label="Bailout Policy" value={economy?.bailout_enabled ? 'On' : 'Off'} tone={economy?.bailout_enabled ? 'text-emerald-300' : 'text-rose-300'} />
@@ -801,10 +808,10 @@ function TaxationTab({ players, properties, myPlayerId, taxStats, economy, setti
   );
 }
 
-function PlayerBreakdownTab({ players, properties, playerFinanceHistory, lobbyingStats, taxStats, selectedPlayerId, onSelectPlayer }) {
+function PlayerBreakdownTab({ players, properties, economy, playerFinanceHistory, lobbyingStats, taxStats, selectedPlayerId, onSelectPlayer }) {
   const netWorthRows = useMemo(
-    () => buildCurrentNetWorthRows(players, properties),
-    [players, properties],
+    () => buildCurrentNetWorthRows(players, properties, economy),
+    [players, properties, economy],
   );
 
   const activePlayerId = players.some((player) => player.id === selectedPlayerId)
@@ -958,6 +965,7 @@ export default function TaxationDetailsModal({ onClose }) {
         <PlayerBreakdownTab
           players={players}
           properties={properties}
+          economy={economy}
           playerFinanceHistory={playerFinanceHistory}
           lobbyingStats={lobbyingStats}
           taxStats={taxStats}

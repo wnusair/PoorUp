@@ -143,7 +143,7 @@ CAUSE_LABELS = {
 GRIEVANCE_POLICY_TARGETS = {
     "hostile_lobbying": ["welfare_increase", "economic_stimulus", "rent_control", "stabilization_fund"],
     "ownership_concentration": ["welfare_increase", "economic_stimulus", "rent_control", "stabilization_fund"],
-    "shareholder_pressure": ["capital_controls", "investor_mood_decrease", "cash_bonus_decrease", "rent_control", "welfare_increase", "stabilization_fund"],
+    "shareholder_pressure": ["money_supply_contract", "tax_bracket_rate_up", "treasury_transfer_players", "welfare_increase", "stabilization_fund"],
     "fiscal_backlash": ["tax_multiplier_increase", "welfare_decrease", "bailout_disable", "stabilization_fund"],
     "welfare_shortfall": ["welfare_increase", "economic_stimulus"],
     "tax_pressure": ["tax_multiplier_decrease"],
@@ -161,7 +161,7 @@ GRIEVANCE_ACTIONS = {
         {"type": "manage", "label": "Stop squeezing this area so hard", "expected_relief": 10},
     ],
     "shareholder_pressure": [
-        {"type": "lobby", "label": "Tighten investor rules or cool the cash bonus before people get pushed out", "expected_relief": 18},
+        {"type": "lobby", "label": "Tighten money conditions or raise upper-tier taxes before people get pushed out", "expected_relief": 18},
         {"type": "negotiate", "label": "Spend money locally to cool the area down", "expected_relief": 16},
         {"type": "manage", "label": "Slow down aggressive building and rent pressure here", "expected_relief": 10},
     ],
@@ -259,7 +259,7 @@ HOSTILE_LOBBY_TARGETS = {
     "welfare_decrease": {"label": "Welfare Cuts", "weight": 1.0, "hardship_sensitive": True},
     "deregulate_housing": {"label": "Housing Deregulation", "weight": 0.65, "hardship_sensitive": False},
     "bailout_disable": {"label": "Disable Bailouts", "weight": 0.55, "hardship_sensitive": True},
-    "market_deregulation": {"label": "Looser Investor Rules", "weight": 0.75, "hardship_sensitive": True},
+    "money_supply_expand": {"label": "Loose Money Push", "weight": 0.75, "hardship_sensitive": True},
 }
 
 TREASURY_BACKLASH_THRESHOLD = 500.0
@@ -837,12 +837,10 @@ def _macro_metrics(game_state: dict, econ: dict, settings: dict | None = None) -
             (market_confidence_norm * 0.38)
             + (capital_yield_norm * 0.34)
             + (private_equity_norm * 0.22)
-            + (0.12 if "market_deregulation" in _active_policy_targets(game_state, current_round) else 0.0)
-            + (0.09 if "investor_mood_increase" in _active_policy_targets(game_state, current_round) else 0.0)
-            + (0.07 if "cash_bonus_increase" in _active_policy_targets(game_state, current_round) else 0.0)
-            - (0.10 if "capital_controls" in _active_policy_targets(game_state, current_round) else 0.0)
-            - (0.08 if "investor_mood_decrease" in _active_policy_targets(game_state, current_round) else 0.0)
-            - (0.06 if "cash_bonus_decrease" in _active_policy_targets(game_state, current_round) else 0.0),
+            + (0.14 if "money_supply_expand" in _active_policy_targets(game_state, current_round) else 0.0)
+            + (0.06 if "tax_bracket_boundary_down" in _active_policy_targets(game_state, current_round) else 0.0)
+            - (0.12 if "money_supply_contract" in _active_policy_targets(game_state, current_round) else 0.0)
+            - (0.06 if "tax_bracket_rate_up" in _active_policy_targets(game_state, current_round) else 0.0),
             0.0,
             1.0,
         )
@@ -1389,8 +1387,8 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
     if government_type == "liberal_democracy":
         shareholder_pressure_points = float(cause_points.get("shareholder_pressure", 0) or 0)
         current_dominant_points = float(cause_points.get(dominant_grievance, 0) or 0)
-        has_market_deregulation_pressure = any(
-            target.get("target") == "market_deregulation"
+        has_money_supply_expansion_pressure = any(
+            target.get("target") == "money_supply_expand"
             for target in (hostile_lobbying.get("targets") or [])
             if isinstance(target, dict)
         )
@@ -1398,7 +1396,7 @@ def _coerce_property_for_social(game_state: dict, prop: dict, persistent_entry: 
             shareholder_pressure_points >= max(14.0, current_dominant_points * 0.78)
             or (
                 shareholder_pressure_points >= 12.0
-                and (market_confidence_norm >= 0.65 or private_equity_norm >= 0.45 or has_market_deregulation_pressure)
+                and (market_confidence_norm >= 0.65 or private_equity_norm >= 0.45 or has_money_supply_expansion_pressure)
             )
         ):
             dominant_grievance = "shareholder_pressure"

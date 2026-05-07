@@ -74,6 +74,10 @@ export default function HelpTooltip({ content, label = 'More info' }) {
             }
 
             const nextHeight = node.getBoundingClientRect().height;
+            if (nextHeight <= 0) {
+              return;
+            }
+
             setTooltipStyle((current) => {
               if (current && Math.abs((current.height || 0) - nextHeight) < 1) {
                 return current;

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useGameStore } from '../../hooks/useGameState';
 import PropertyModal from './PropertyModal';
@@ -36,40 +36,42 @@ function setStoreState() {
     ],
   };
 
-  useGameStore.setState({
-    pendingAction: null,
-    myPlayerId: 1,
-    currentPlayerId: 1,
-    players: [
-      { id: 1, username: 'Atlas', balance: 900 },
-      { id: 2, username: 'Rival', balance: 700 },
-    ],
-    properties: {
-      11: property,
-    },
-    economy: {
-      gov_type: 'liberal_democracy',
-      government_type: 'liberal_democracy',
-      market_confidence: 79,
-      capital_yield_rate: 0.021,
-      private_equity_bonus_multiplier: 1.15,
-    },
-    social: {
-      plot: {
-        exists: false,
-        public: false,
-        member_ids: [],
-        coalition_member_ids: [],
-        committed_member_ids: [],
-        command_chain: [],
-        action_catalog: [],
-        counter_action_catalog: [],
-        legal_targets: [],
-        seized_properties: [],
-        seized_property_ids: [],
+  act(() => {
+    useGameStore.setState({
+      pendingAction: null,
+      myPlayerId: 1,
+      currentPlayerId: 1,
+      players: [
+        { id: 1, username: 'Atlas', balance: 900 },
+        { id: 2, username: 'Rival', balance: 700 },
+      ],
+      properties: {
+        11: property,
       },
-      properties: {},
-    },
+      economy: {
+        gov_type: 'liberal_democracy',
+        government_type: 'liberal_democracy',
+        market_confidence: 79,
+        capital_yield_rate: 0.021,
+        private_equity_bonus_multiplier: 1.15,
+      },
+      social: {
+        plot: {
+          exists: false,
+          public: false,
+          member_ids: [],
+          coalition_member_ids: [],
+          committed_member_ids: [],
+          command_chain: [],
+          action_catalog: [],
+          counter_action_catalog: [],
+          legal_targets: [],
+          seized_properties: [],
+          seized_property_ids: [],
+        },
+        properties: {},
+      },
+    });
   });
 
   return property;
@@ -78,18 +80,20 @@ function setStoreState() {
 
 describe('PropertyModal', () => {
   afterEach(() => {
-    useGameStore.setState({
-      pendingAction: null,
-      myPlayerId: null,
-      currentPlayerId: null,
-      players: [],
-      properties: {},
-      economy: {},
-      social: { plot: {}, properties: {} },
+    act(() => {
+      useGameStore.setState({
+        pendingAction: null,
+        myPlayerId: null,
+        currentPlayerId: null,
+        players: [],
+        properties: {},
+        economy: {},
+        social: { plot: {}, properties: {} },
+      });
     });
   });
 
-  it('shows effective PE ceilings under liberal democracy', () => {
+  it('keeps liberal-democracy deal effects on written caps instead of PE bonuses', () => {
     const property = setStoreState();
 
     render(
@@ -106,62 +110,66 @@ describe('PropertyModal', () => {
       />,
     );
 
-    expect(screen.getByText("This Round's Cash Rules")).toBeInTheDocument();
-    expect(screen.getByText(/1v1 bonus active:/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/\$380/).length).toBeGreaterThan(0);
+    expect(screen.queryByText("This Round's Cash Rules")).not.toBeInTheDocument();
+    expect(screen.queryByText(/1v1 bonus active:/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Build Money Available')).toBeInTheDocument();
+    expect(screen.getByText('Money Still Owed')).toBeInTheDocument();
+    expect(screen.getAllByText(/\$300/).length).toBeGreaterThan(0);
   });
 
-  it('shows property-scoped plot actions in the plot tab', () => {
+  it('shows property-scoped plot actions in the plot tab', async () => {
     const property = setStoreState();
     const onPlotAction = vi.fn();
 
-    useGameStore.setState({
-      social: {
-        plot: {
-          exists: true,
-          public: false,
-          stage: 3,
-          member_ids: [1],
-          coalition_member_ids: [],
-          committed_member_ids: [1],
-          command_chain: [
-            {
-              player_id: 1,
-              username: 'Atlas',
-              role: 'organizer',
-              can_issue_orders: true,
-              can_manage_membership: true,
-            },
-          ],
-          action_catalog: [
-            {
-              action_type: 'agitate_property',
-              stage: 1,
-              cost: { support: 2 },
-              description: 'Raise agitation on a specific property.',
-              label: 'Agitate Property',
-            },
-          ],
-          counter_action_catalog: [],
-          legal_targets: [
-            {
+    act(() => {
+      useGameStore.setState({
+        social: {
+          plot: {
+            exists: true,
+            public: false,
+            stage: 3,
+            member_ids: [1],
+            coalition_member_ids: [],
+            committed_member_ids: [1],
+            command_chain: [
+              {
+                player_id: 1,
+                username: 'Atlas',
+                role: 'organizer',
+                can_issue_orders: true,
+                can_manage_membership: true,
+              },
+            ],
+            action_catalog: [
+              {
+                action_type: 'agitate_property',
+                stage: 1,
+                cost: { support: 2 },
+                description: 'Raise agitation on a specific property.',
+                label: 'Agitate Property',
+              },
+            ],
+            counter_action_catalog: [],
+            legal_targets: [
+              {
+                property_id: 11,
+                owner_id: 1,
+                board_position: 11,
+                agitation: 2,
+                preview_score: 9,
+              },
+            ],
+            seized_properties: [],
+            seized_property_ids: [],
+          },
+          properties: {
+            '11': {
               property_id: 11,
-              owner_id: 1,
-              board_position: 11,
-              agitation: 2,
-              preview_score: 9,
+              plot_seized: false,
             },
-          ],
-          seized_properties: [],
-          seized_property_ids: [],
-        },
-        properties: {
-          '11': {
-            property_id: 11,
-            plot_seized: false,
           },
         },
-      },
+      });
     });
 
     render(
@@ -181,10 +189,16 @@ describe('PropertyModal', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Plot' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Plot' }));
+    });
 
     expect(screen.getByRole('button', { name: 'Increase Support' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Support' }));
-    expect(onPlotAction).toHaveBeenCalledWith({ action_type: 'agitate_property', property_id: 11 });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Increase Support' }));
+    });
+    await waitFor(() => {
+      expect(onPlotAction).toHaveBeenCalledWith({ action_type: 'agitate_property', property_id: 11 });
+    });
   });
 });

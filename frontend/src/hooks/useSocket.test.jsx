@@ -297,6 +297,37 @@ describe('useSocket trade presentation', () => {
     expect(state.takenColors).toEqual(['#3B82F6', '#EF4444']);
   });
 
+  it('clears bankruptcy UI immediately after a bailout event', () => {
+    useGameStore.setState({
+      pendingAction: {
+        type: 'bankruptcy',
+        data: {
+          player_id: 1,
+          debt_amount: 400,
+        },
+      },
+      activeModal: 'bankruptcy',
+      players: [
+        { id: 1, username: 'Atlas', bankrupt: true, balance: -120 },
+        { id: 2, username: 'Bot Prime', bankrupt: false, balance: 500 },
+      ],
+    });
+
+    render(<SocketHarness />);
+
+    handlers.player_bailed_out({
+      player_id: 1,
+      player_name: 'Atlas',
+      new_balance: 180,
+    });
+
+    const state = useGameStore.getState();
+    expect(state.pendingAction).toBeNull();
+    expect(state.activeModal).toBeNull();
+    expect(state.players.find((player) => player.id === 1)?.bankrupt).toBe(false);
+    expect(state.players.find((player) => player.id === 1)?.balance).toBe(180);
+  });
+
   it('buffers a roll action while the socket is reconnecting', () => {
     fakeSocket.connected = false;
     fakeSocket.active = true;

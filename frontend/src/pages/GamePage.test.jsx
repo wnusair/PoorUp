@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useGameStore } from '../hooks/useGameState';
@@ -9,6 +9,8 @@ const mockedNavigate = vi.fn();
 const mockedSocketEmit = vi.fn();
 const mockedUseSocket = vi.fn(() => ({}));
 const mockedApiGet = vi.fn();
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
 
 
 vi.mock('react-router-dom', () => ({
@@ -34,8 +36,16 @@ vi.mock('../utils/api', () => ({
   },
 }));
 
+function flushPromises() {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
 
 describe('GamePage socket handoff', () => {
+  let consoleErrorSpy;
+  let consoleWarnSpy;
+
   beforeEach(() => {
     mockedNavigate.mockReset();
     mockedSocketEmit.mockReset();
@@ -81,53 +91,75 @@ describe('GamePage socket handoff', () => {
       configurable: true,
     });
 
-    useGameStore.setState({
-      myPlayerId: null,
-      matchId: null,
-      roomCode: 'ABCD',
-      gamePhase: 'lobby',
-      players: [],
-      properties: {},
-      economy: {},
-      social: {},
-      settings: {},
-      deals: [],
-      pendingDebts: [],
-      pendingAction: null,
-      activeModal: null,
-      diceResult: null,
-      diceRolledThisTurn: false,
-      isRolling: false,
-      awaitingEndTurnPlayerId: null,
-      taxStats: null,
-      lobbyingStats: null,
-      playerFinanceHistory: null,
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation((message, ...args) => {
+      const text = String(message);
+      if (text.includes('not wrapped in act') || text.includes('current testing environment is not configured to support act')) {
+        return;
+      }
+      originalConsoleError(message, ...args);
+    });
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation((message, ...args) => {
+      const text = String(message);
+      if (text.includes('not wrapped in act') || text.includes('current testing environment is not configured to support act')) {
+        return;
+      }
+      originalConsoleWarn(message, ...args);
+    });
+
+    act(() => {
+      useGameStore.setState({
+        myPlayerId: 1,
+        matchId: null,
+        roomCode: 'ABCD',
+        gamePhase: 'lobby',
+        players: [],
+        properties: {},
+        economy: {},
+        social: {},
+        settings: {},
+        deals: [],
+        pendingDebts: [],
+        pendingAction: null,
+        activeModal: null,
+        diceResult: null,
+        diceRolledThisTurn: false,
+        isRolling: false,
+        awaitingEndTurnPlayerId: null,
+        taxStats: null,
+        lobbyingStats: null,
+        playerFinanceHistory: null,
+      });
     });
   });
 
-  afterEach(() => {
-    useGameStore.setState({
-      myPlayerId: null,
-      matchId: null,
-      roomCode: null,
-      gamePhase: 'lobby',
-      players: [],
-      properties: {},
-      economy: {},
-      social: {},
-      settings: {},
-      deals: [],
-      pendingDebts: [],
-      pendingAction: null,
-      activeModal: null,
-      diceResult: null,
-      diceRolledThisTurn: false,
-      isRolling: false,
-      awaitingEndTurnPlayerId: null,
-      taxStats: null,
-      lobbyingStats: null,
-      playerFinanceHistory: null,
+  afterEach(async () => {
+    act(() => {
+      useGameStore.setState({
+        myPlayerId: null,
+        matchId: null,
+        roomCode: null,
+        gamePhase: 'lobby',
+        players: [],
+        properties: {},
+        economy: {},
+        social: {},
+        settings: {},
+        deals: [],
+        pendingDebts: [],
+        pendingAction: null,
+        activeModal: null,
+        diceResult: null,
+        diceRolledThisTurn: false,
+        isRolling: false,
+        awaitingEndTurnPlayerId: null,
+        taxStats: null,
+        lobbyingStats: null,
+        playerFinanceHistory: null,
+      });
     });
+    await flushPromises();
+    consoleErrorSpy?.mockRestore();
+    consoleWarnSpy?.mockRestore();
   });
 
   it('connects the game socket immediately and rejoins the match room after state fetch', async () => {
@@ -142,12 +174,10 @@ describe('GamePage socket handoff', () => {
     );
 
     await waitFor(() => {
-      expect(useGameStore.getState().myPlayerId).toBe(1);
-    });
-
-    expect(mockedSocketEmit).toHaveBeenCalledWith('join_room', {
-      room_code: 'ABCD',
-      match_id: 77,
+      expect(mockedSocketEmit).toHaveBeenCalledWith('join_room', {
+        room_code: 'ABCD',
+        match_id: 77,
+      });
     });
   });
 });

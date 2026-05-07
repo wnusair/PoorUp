@@ -81,17 +81,21 @@ function setStoreState(balance = 25) {
 
 describe('DealDeskModal', () => {
   beforeEach(() => {
-    setStoreState();
+    act(() => {
+      setStoreState();
+    });
   });
 
   afterEach(() => {
-    useGameStore.setState({
-      deals: [],
-      activeDeal: null,
-      players: [],
-      properties: {},
-      settings: {},
-      economy: {},
+    act(() => {
+      useGameStore.setState({
+        deals: [],
+        activeDeal: null,
+        players: [],
+        properties: {},
+        settings: {},
+        economy: {},
+      });
     });
   });
 
@@ -124,7 +128,9 @@ describe('DealDeskModal', () => {
   });
 
   it('preserves the counter draft when the server rejects the counteroffer', async () => {
-    setStoreState(500);
+    act(() => {
+      setStoreState(500);
+    });
     const onCounter = vi.fn().mockRejectedValue(new Error('Only pending deals can be countered.'));
 
     render(
@@ -152,8 +158,10 @@ describe('DealDeskModal', () => {
     expect(screen.getByText('Counteroffer Draft')).toBeInTheDocument();
   });
 
-  it('shows the liberal-democracy market climate for PE deals', () => {
-    setStoreState(500);
+  it('uses written payback caps and hides retired liberal-democracy cash bonus copy', () => {
+    act(() => {
+      setStoreState(500);
+    });
 
     render(
       <DealDeskModal
@@ -166,12 +174,12 @@ describe('DealDeskModal', () => {
       />,
     );
 
-    expect(screen.getByText("This Round's Cash Rules")).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Cash rules help' })).toBeInTheDocument();
-    expect(screen.getByText('Cash Bonus')).toBeInTheDocument();
-    expect(screen.getByText('2.10%')).toBeInTheDocument();
-    expect(screen.getByText(/Current build-loan bonus:/i)).toBeInTheDocument();
-    expect(screen.getByText(/1v1 bonus active:/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/\$268/).length).toBeGreaterThan(0);
+    expect(screen.queryByText("This Round's Cash Rules")).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cash rules help' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Cash Bonus')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Current build-loan bonus:/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/1v1 bonus active:/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Build loans use their written payback cap/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/\$217\.50|\$218/).length).toBeGreaterThan(0);
   });
 });

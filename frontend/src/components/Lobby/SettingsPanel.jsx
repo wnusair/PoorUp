@@ -1,15 +1,17 @@
-import { GOVERNMENT_TYPES, GAME_MODES } from '../../utils/constants';
+import { useState } from 'react';
+import { GOVERNMENT_TYPES } from '../../utils/constants';
 
 const DEFAULT_SETTINGS = {
   starting_money: 1500,
+  starting_money_min: 1000,
+  starting_money_max: 2000,
   go_salary: 200,
   turn_timer_enabled: true,
   turn_time_limit_seconds: 90,
   property_tax_every_n_rounds: 5,
   hyper_inflation_round: 50,
   max_players: 6,
-  government_type: 'liberal_democracy',
-  game_mode: 'standard',
+  government_type: 'minarchism',
   auction_enabled: true,
   trading_enabled: true,
   lobbying_enabled: true,
@@ -29,6 +31,8 @@ const DEFAULT_SETTINGS = {
 
 export default function SettingsPanel({ settings = {}, onChange, readOnly = false }) {
   const merged = { ...DEFAULT_SETTINGS, ...settings };
+  const [draftMin, setDraftMin] = useState(null);
+  const [draftMax, setDraftMax] = useState(null);
 
   const handleChange = (key, value) => {
     if (readOnly) return;
@@ -85,17 +89,75 @@ export default function SettingsPanel({ settings = {}, onChange, readOnly = fals
     </div>
   );
 
+  const isLiberalDemocracy = merged.government_type === 'liberal_democracy';
+  const minMoney = Number(merged.starting_money_min || merged.starting_money || 1000);
+  const maxMoney = Number(merged.starting_money_max || merged.starting_money || 2000);
+
   return (
     <div className="space-y-6">
       {readOnly && (
         <p className="text-xs text-gray-500 italic">Only the host can change settings.</p>
       )}
 
-      {/* Numeric settings */}
+      {/* Economy settings */}
       <div>
         <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Economy</h3>
         <div className="grid grid-cols-2 gap-3">
-          <NumberInput label="Starting Money ($)" settingKey="starting_money" min={500} max={10000} step={100} />
+          {isLiberalDemocracy ? (
+            <div className="col-span-2">
+              <p className="text-sm font-medium text-gray-300 mb-2">Starting Money Range</p>
+              <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 space-y-3">
+                <div className="flex items-center justify-between text-xs text-gray-400">
+                  <span>Min: <span className="font-semibold text-white">${minMoney.toLocaleString()}</span></span>
+                  <span className="text-gray-500">→</span>
+                  <span>Max: <span className="font-semibold text-white">${maxMoney.toLocaleString()}</span></span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Min ($)</label>
+                    <input
+                      type="number"
+                      value={draftMin !== null ? draftMin : minMoney}
+                      min={200}
+                      max={maxMoney}
+                      step={100}
+                      disabled={readOnly}
+                      onFocus={() => setDraftMin(minMoney)}
+                      onChange={(e) => setDraftMin(e.target.value)}
+                      onBlur={() => {
+                        const val = Math.min(Math.max(200, Number(draftMin) || minMoney), maxMoney);
+                        handleChange('starting_money_min', val);
+                        setDraftMin(null);
+                      }}
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Max ($)</label>
+                    <input
+                      type="number"
+                      value={draftMax !== null ? draftMax : maxMoney}
+                      min={minMoney}
+                      max={10000}
+                      step={100}
+                      disabled={readOnly}
+                      onFocus={() => setDraftMax(maxMoney)}
+                      onChange={(e) => setDraftMax(e.target.value)}
+                      onBlur={() => {
+                        const val = Math.max(Math.min(10000, Number(draftMax) || maxMoney), minMoney);
+                        handleChange('starting_money_max', val);
+                        setDraftMax(null);
+                      }}
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500">Players start with a random amount between these values.</p>
+              </div>
+            </div>
+          ) : (
+            <NumberInput label="Starting Money ($)" settingKey="starting_money" min={500} max={10000} step={100} />
+          )}
           <NumberInput label="GO Salary ($)" settingKey="go_salary" min={100} max={1000} step={50} />
           <div className="space-y-3">
             <Toggle
@@ -150,39 +212,6 @@ export default function SettingsPanel({ settings = {}, onChange, readOnly = fals
         </div>
       </div>
 
-      {/* Game mode */}
-      <div>
-        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Game Mode</h3>
-        <div className="grid grid-cols-2 gap-2">
-          {Object.entries(GAME_MODES).map(([key, { label, description }]) => (
-            <label
-              key={key}
-              className={[
-                'flex flex-col gap-1 p-3 rounded-lg border cursor-pointer transition',
-                merged.game_mode === key
-                  ? 'border-purple-500 bg-purple-900/20'
-                  : 'border-gray-600 bg-gray-800 hover:border-gray-500',
-                readOnly ? 'cursor-not-allowed' : '',
-              ].join(' ')}
-            >
-              <div className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="game_mode"
-                  value={key}
-                  checked={merged.game_mode === key}
-                  disabled={readOnly}
-                  onChange={() => handleChange('game_mode', key)}
-                  className="accent-purple-500"
-                />
-                <span className="text-sm font-medium text-white">{label}</span>
-              </div>
-              <p className="text-xs text-gray-400 ml-5">{description}</p>
-            </label>
-          ))}
-        </div>
-      </div>
-
       {/* Feature toggles */}
       <div>
         <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Features</h3>
@@ -208,7 +237,7 @@ export default function SettingsPanel({ settings = {}, onChange, readOnly = fals
       </div>
 
       <div>
-        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Taxation & Welfare</h3>
+        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Taxation &amp; Welfare</h3>
         <p className="text-xs text-gray-500 mb-3">
           Welfare is percentage-based. Qualifying players receive a share of the gap between their balance and $200 above the welfare cap. A cap of $0 uses a $400 target instead.
         </p>

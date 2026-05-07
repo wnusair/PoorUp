@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 import random
 import uuid
 from datetime import datetime
@@ -52,6 +53,14 @@ from app.engine.plot import (
     submit_plot_join,
     submit_plot_leave,
 )
+from app.engine.liberal_democracy import (
+    buy_corporate_property as execute_liberal_democracy_buyout,
+    deposit_bank_funds as execute_liberal_democracy_deposit,
+    repay_bank_loan as execute_liberal_democracy_repay,
+    request_bank_loan as execute_liberal_democracy_loan,
+    submit_market_order as execute_liberal_democracy_market_order,
+    withdraw_bank_funds as execute_liberal_democracy_withdraw,
+)
 from app.engine.social import (
     GRIEVANCE_POLICY_TARGETS,
     property_private_actions_locked,
@@ -77,10 +86,11 @@ from app.utils.bot_registry import (
     choose_default_personality,
     get_difficulty_metadata,
     get_personality_metadata,
+    infer_archetype_from_personality,
     infer_legacy_difficulty,
     normalize_bot_difficulty,
     normalize_bot_personality,
-    validate_bot_configuration,
+    resolve_bot_configuration,
 )
 from app.utils.settings import normalize_game_mode, normalize_government_type
 
@@ -112,18 +122,151 @@ BOT_TASK_TTL_SECONDS = 120
 BOT_STATE_EVALUATION_DEBOUNCE_SECONDS = 0.35
 BOT_STATE_EVALUATION_TTL_SECONDS = 5
 TRADE_MIN_INCREMENT = 25.0
+HIDDEN_PARTNERSHIP_KEY = "game:{match_id}:bot_hidden_partnerships"
 SOCIAL_TARGET_PRIORITY = {
     "stabilization_fund": 1,
-    "capital_controls": 2,
-    "investor_mood_decrease": 2,
+    "money_supply_contract": 2,
     "welfare_increase": 2,
-    "cash_bonus_decrease": 3,
+    "tax_bracket_rate_up": 3,
     "rent_control": 3,
     "tax_multiplier_decrease": 4,
     "economic_stimulus": 5,
     "bailout_enable": 6,
-    "market_deregulation": 7,
+    "money_supply_expand": 7,
 }
+
+
+def _profile_from_player(player: dict[str, Any], current_player_id: int | None = None, current_profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    if current_player_id is not None and int(player.get("id") or 0) == int(current_player_id) and current_profile:
+        return dict(current_profile)
+    profile = player.get("bot_profile")
+    if isinstance(profile, dict):
+        return dict(profile)
+    return {
+        "difficulty": player.get("bot_difficulty") or player.get("difficulty"),
+        "archetype": player.get("bot_archetype") or player.get("archetype"),
+        "persona": player.get("bot_persona") or player.get("persona"),
+    }
+
+
+def _bot_difficulty_from_player(player: dict[str, Any], current_player_id: int | None = None, current_profile: dict[str, Any] | None = None) -> str:
+    profile = _profile_from_player(player, current_player_id, current_profile)
+    return normalize_bot_difficulty(profile.get("difficulty") or infer_legacy_difficulty(profile.get("persona")))
+
+
+def _eligible_hidden_partnership_bot_ids(
+    game_state: dict[str, Any],
+    current_player_id: int | None = None,
+    current_profile: dict[str, Any] | None = None,
+) -> list[int]:
+    active_players = [player for player in game_state.get("players", []) if not player.get("is_bankrupt")]
+    if len(active_players) < 4:
+        return []
+    eligible = []
+    for player in active_players:
+        if not player.get("is_bot"):
+            continue
+        difficulty = _bot_difficulty_from_player(player, current_player_id, current_profile)
+        if difficulty in {"hard", "expert"}:
+            eligible.append(int(player.get("id") or 0))
+    return sorted(player_id for player_id in eligible if player_id > 0)
+
+
+def _load_hidden_partnerships(match_id: int) -> dict[str, Any]:
+    if redis_client is None:
+        return {"pairs": []}
+    raw_value = redis_client.get(HIDDEN_PARTNERSHIP_KEY.format(match_id=match_id))
+    if raw_value is None:
+        return {"pairs": []}
+    if isinstance(raw_value, bytes):
+        raw_value = raw_value.decode("utf-8")
+    try:
+        payload = json.loads(str(raw_value))
+    except (TypeError, ValueError):
+        return {"pairs": []}
+    return {"pairs": list((payload or {}).get("pairs") or [])}
+
+
+def _save_hidden_partnerships(match_id: int, payload: dict[str, Any]) -> None:
+    if redis_client is None:
+        return
+    redis_client.set(
+        HIDDEN_PARTNERSHIP_KEY.format(match_id=match_id),
+        json.dumps({"pairs": list(payload.get("pairs") or [])}, sort_keys=True),
+        ex=60 * 60 * 8,
+    )
+
+
+def ensure_hidden_bot_partnerships(
+    game_state: dict[str, Any],
+    *,
+    current_player_id: int | None = None,
+    current_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    match_id = int(game_state.get("match_id") or 0)
+    if match_id <= 0:
+        return {"pairs": []}
+    eligible_ids = _eligible_hidden_partnership_bot_ids(game_state, current_player_id, current_profile)
+    payload = _load_hidden_partnerships(match_id)
+    valid_pairs = []
+    eligible_set = set(eligible_ids)
+    for pair in payload.get("pairs") or []:
+        player_ids = sorted(int(value) for value in pair.get("player_ids", []) if int(value or 0) in eligible_set)
+        if len(player_ids) == 2:
+            valid_pairs.append({**dict(pair), "player_ids": player_ids})
+    if valid_pairs:
+        payload = {"pairs": valid_pairs[:1]}
+        _save_hidden_partnerships(match_id, payload)
+        return payload
+    if len(eligible_ids) < 2:
+        return {"pairs": []}
+    payload = {
+        "pairs": [
+            {
+                "player_ids": eligible_ids[:2],
+                "formed_round": int(game_state.get("current_round", 1) or 1),
+                "cooperation_score": 0.0,
+            }
+        ]
+    }
+    _save_hidden_partnerships(match_id, payload)
+    return payload
+
+
+def hidden_partner_ids(player_id: int, game_state: dict[str, Any]) -> list[int]:
+    player_id = int(player_id or 0)
+    payload = ensure_hidden_bot_partnerships(game_state)
+    for pair in payload.get("pairs") or []:
+        ids = [int(value) for value in pair.get("player_ids", [])]
+        if player_id in ids:
+            return [candidate for candidate in ids if candidate != player_id]
+    return []
+
+
+def calculate_hidden_partnership_cooperation_metrics(game_state: dict[str, Any]) -> dict[str, Any]:
+    payload = ensure_hidden_bot_partnerships(game_state)
+    pairs = payload.get("pairs") or []
+    player_lookup = {int(player.get("id") or 0): player for player in game_state.get("players", [])}
+    edges = []
+    for pair in pairs:
+        ids = [int(value) for value in pair.get("player_ids", [])]
+        if len(ids) != 2:
+            continue
+        left = player_lookup.get(ids[0], {})
+        right = player_lookup.get(ids[1], {})
+        left_cash = float(left.get("balance", 0) or 0)
+        right_cash = float(right.get("balance", 0) or 0)
+        cash_gap = abs(left_cash - right_cash)
+        support_bias = max(0.0, 1.0 - min(1.0, cash_gap / 1800.0))
+        edges.append({
+            "player_ids": ids,
+            "cooperation_score": round(0.35 + support_bias * 0.45, 4),
+        })
+    return {
+        "pair_count": len(edges),
+        "cooperation_edges": edges,
+        "average_cooperation": round(sum(edge["cooperation_score"] for edge in edges) / max(1, len(edges)), 4) if edges else 0.0,
+    }
 LOBBY_INCREMENT = 25.0
 BOT_NEGOTIATION_SHARE_CAP = {
     "easy": 0.08,
@@ -142,6 +285,7 @@ def build_bot_profile(
     *,
     difficulty: str | None = None,
     persona: str | None = None,
+    archetype: str | None = None,
     rng: random.Random | None = None,
     seat_index: int = 0,
 ) -> dict[str, Any]:
@@ -154,12 +298,14 @@ def build_bot_profile(
     normalized_difficulty = normalize_bot_difficulty(
         difficulty or infer_legacy_difficulty(persona)
     )
-    if persona is None:
+    if persona is None and archetype is None:
         normalized_persona = choose_default_personality(normalized_difficulty, seat_index=seat_index)
+        normalized_archetype = infer_archetype_from_personality(normalized_persona)
     else:
-        normalized_difficulty, normalized_persona = validate_bot_configuration(
+        normalized_difficulty, normalized_persona, normalized_archetype = resolve_bot_configuration(
             normalized_difficulty,
-            persona,
+            selection=persona,
+            archetype=archetype,
         )
 
     difficulty_meta = get_difficulty_metadata(normalized_difficulty)
@@ -292,6 +438,7 @@ def build_bot_profile(
         "strategy_version": STRATEGY_VERSION,
         "difficulty": normalized_difficulty,
         "persona": normalized_persona,
+        "archetype": normalized_archetype,
         "doctrine": doctrine,
         "doctrine_preferences": list(personality_meta["preferred_doctrines"]),
         "economic_mode": game_mode,
@@ -468,6 +615,7 @@ def ensure_bot_profile(match_player: MatchPlayer, settings: dict | None = None) 
             settings,
             difficulty=existing_difficulty,
             persona=existing_persona,
+            archetype=profile.get("archetype"),
             seat_index=max(0, seat_index),
         )
         db.session.commit()
@@ -480,6 +628,7 @@ def create_bot_for_lobby(
     *,
     difficulty: str | None = None,
     persona: str | None = None,
+    archetype: str | None = None,
 ) -> MatchPlayer:
     settings = {**DEFAULT_SETTINGS, **(match.settings_json or {})}
     max_players = int(settings.get("max_players", DEFAULT_SETTINGS["max_players"]))
@@ -502,10 +651,15 @@ def create_bot_for_lobby(
 
     bot_count = MatchPlayer.query.filter_by(match_id=match.id, is_bot=True).count()
     normalized_difficulty = normalize_bot_difficulty(difficulty or "normal")
-    if persona is None:
+    if persona is None and archetype is None:
         normalized_persona = choose_default_personality(normalized_difficulty, seat_index=bot_count)
+        normalized_archetype = infer_archetype_from_personality(normalized_persona)
     else:
-        normalized_difficulty, normalized_persona = validate_bot_configuration(normalized_difficulty, persona)
+        normalized_difficulty, normalized_persona, normalized_archetype = resolve_bot_configuration(
+            normalized_difficulty,
+            selection=persona,
+            archetype=archetype,
+        )
     bot_player = MatchPlayer(
         match_id=match.id,
         user_id=user.id,
@@ -518,6 +672,7 @@ def create_bot_for_lobby(
             settings,
             difficulty=normalized_difficulty,
             persona=normalized_persona,
+            archetype=normalized_archetype,
             seat_index=bot_count,
         ),
     )
@@ -545,6 +700,7 @@ def update_bot_for_lobby(
     *,
     difficulty: str | None = None,
     persona: str | None = None,
+    archetype: str | None = None,
 ) -> MatchPlayer | None:
     bot_player = MatchPlayer.query.filter_by(match_id=match.id, id=bot_player_id, is_bot=True).first()
     if bot_player is None:
@@ -562,17 +718,21 @@ def update_bot_for_lobby(
         difficulty or existing_profile.get("difficulty") or infer_legacy_difficulty(existing_profile.get("persona"))
     )
     requested_persona = persona or existing_profile.get("persona")
-    if requested_persona is None:
+    requested_archetype = archetype or existing_profile.get("archetype")
+    if requested_persona is None and requested_archetype is None:
         requested_persona = choose_default_personality(requested_difficulty, seat_index=max(0, seat_index))
+        requested_archetype = infer_archetype_from_personality(requested_persona)
 
-    requested_difficulty, requested_persona = validate_bot_configuration(
+    requested_difficulty, requested_persona, requested_archetype = resolve_bot_configuration(
         requested_difficulty,
-        requested_persona,
+        selection=requested_persona,
+        archetype=requested_archetype,
     )
     bot_player.bot_profile = build_bot_profile(
         settings,
         difficulty=requested_difficulty,
         persona=requested_persona,
+        archetype=requested_archetype,
         seat_index=max(0, seat_index),
     )
     db.session.commit()
@@ -596,7 +756,7 @@ def _queue_bot_state_evaluation(
         return
 
     pending_action = game_state.get("pending_action") or {}
-    if pending_action.get("type") == "buy_property" and pending_action.get("player_id") in bot_ids:
+    if pending_action.get("type") in {"buy_property", "buy_corporate_property"} and pending_action.get("player_id") in bot_ids:
         _schedule_player_task(
             match_id,
             pending_action["player_id"],
@@ -1002,8 +1162,6 @@ def _social_lobby_target(entry: dict) -> str | None:
     targets = GRIEVANCE_POLICY_TARGETS.get(dominant_grievance, [])
     if not targets:
         return None
-    if dominant_grievance == "shareholder_pressure" and "capital_controls" in targets:
-        return "capital_controls"
     return sorted(targets, key=lambda key: SOCIAL_TARGET_PRIORITY.get(key, 99))[0]
 
 
@@ -2367,38 +2525,38 @@ def choose_lobbying_move(player: dict, game_state: dict, profile: dict[str, Any]
         target_success = max(target_success, 0.58)
 
     if target is None and government_type == "liberal_democracy":
-        if social_summary.get("preferred_lobby_target") == "capital_controls" and (
+        if social_summary.get("preferred_lobby_target") == "money_supply_contract" and (
             social_summary.get("civil_risk_score", 0) >= 0.52
             or social_summary.get("incident_count", 0) > 0
             or market_overheat_score >= 0.58
         ):
-            axis = "capital_markets"
-            direction = "tighten"
+            axis = "money_supply"
+            direction = "contract"
             reason = "cool_shareholder_backlash"
             target_success = max(target_success, 0.56)
         elif doctrine == "capital_markets_arbitrage":
             if market_confidence <= 64.0 and social_summary.get("civil_risk_score", 0) < 0.55 and stability >= 0.48:
-                axis = "capital_markets"
+                axis = "money_supply"
                 direction = "expand"
-                reason = "restore_investor_confidence"
+                reason = "restore_market_confidence"
                 target_success = max(target_success, 0.54)
             elif private_equity_edge_score >= 0.46 and market_overheat_score < 0.58:
-                axis = "capital_markets"
-                direction = "expand"
+                axis = "tax_brackets"
+                direction = "lower_rate"
                 reason = "expand_private_equity_upside"
                 target_success = max(target_success, 0.52)
             elif market_overheat_score >= 0.62:
-                axis = "capital_markets"
-                direction = "tighten"
+                axis = "money_supply"
+                direction = "contract"
                 reason = "cool_overheated_market"
                 target_success = max(target_success, 0.56)
         elif wealthy and market_confidence <= 60.0 and social_summary.get("civil_risk_score", 0) < 0.48:
-            axis = "capital_markets"
+            axis = "money_supply"
             direction = "expand"
             reason = "restore_market_confidence"
         elif wealthy and market_overheat_score >= 0.68:
-            axis = "capital_markets"
-            direction = "tighten"
+            axis = "money_supply"
+            direction = "contract"
             reason = "protect_against_backlash"
 
     if target is None and axis and direction:
@@ -2834,9 +2992,18 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     member_ids = {int(value) for value in (plot.get("member_ids") or []) if value is not None}
     committed_member_ids = {int(value) for value in (plot.get("committed_member_ids") or []) if value is not None}
     coalition_member_ids = {int(value) for value in (plot.get("coalition_member_ids") or []) if value is not None}
+    raw_member_entry = dict((plot.get("members") or {}).get(str(player_id)) or {})
     invite_pending = bool((plot.get("join_invites") or {}).get(str(player_id)))
     request_pending = bool((plot.get("join_requests") or {}).get(str(player_id)))
     defection_cooldown_until = int(player.get("plot_defection_cooldown_until", 0) or 0)
+    defection_reason = str(raw_member_entry.get("defection_reason") or "")
+    left_round = int(raw_member_entry.get("left_round", 0) or 0)
+    private_defection_reentry_locked = (
+        defection_reason == "protect_private_win_path"
+        and left_round > 0
+        and current_round <= left_round + 8
+        and not _plot_near_victory(plot)
+    )
     plot_role = str(player.get("plot_role") or "")
     command_entry = next(
         (entry for entry in (plot.get("command_chain") or []) if int(entry.get("player_id") or 0) == player_id),
@@ -2847,6 +3014,10 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     strong_private_path = bool(private_win_signal.get("strong_private_path"))
     plot_close_to_victory = _plot_near_victory(plot)
     commander_id = int(((plot.get("commander") or {}).get("player_id") or plot.get("commander_id") or 0) or 0)
+    strategic_goal = str(plot.get("strategic_goal") or "")
+    strategic_goal_region = str(plot.get("goal_target_region") or "")
+    strategic_goal_property_id = int(plot.get("goal_target_property_id") or 0) or None
+    joint_account_balance = float(plot.get("joint_account_balance", 0) or 0)
     seized_properties = sorted(
         [entry for entry in (plot.get("seized_properties") or []) if entry.get("property_id") is not None],
         key=lambda entry: (
@@ -2892,6 +3063,7 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     ]
     coordinated_push_target_count = _plot_coordination_targets(plot, legal_targets)
     coordinated_push_ready = not _plot_should_hold_for_coordinated_push(plot, legal_targets)
+    joined_round = int(command_entry.get("joined_round", raw_member_entry.get("joined_round", current_round)) or current_round)
     overwhelming_private_path = bool(
         int(private_win_signal.get("monopoly_count", 0) or 0) >= 2
         or (
@@ -2907,6 +3079,12 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     )
 
     if player_id not in member_ids:
+        if private_defection_reentry_locked:
+            if invite_pending:
+                return {"type": "plot_join", "intent": "decline", "reason": "recent_private_path_defection"}
+            if player_id in coalition_member_ids:
+                return _choose_plot_counter_action(player, plot, profile)
+            return None
         if invite_pending and current_round > defection_cooldown_until:
             if strong_private_path and not plot_close_to_victory:
                 return {"type": "plot_join", "intent": "decline", "reason": "protect_private_win_path"}
@@ -2929,6 +3107,8 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         strong_private_path
         and overwhelming_private_path
         and not plot_close_to_victory
+        and len(member_ids) > 2
+        and current_round >= joined_round + 2
         and player_id != commander_id
         and plot_role != "founder"
     ):
@@ -2941,7 +3121,7 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         if (
             current_round > int(player.get("plot_join_round", current_round) or current_round)
             and contribution_round_count < required_contribution_rounds
-            and balance >= contribution_cost
+            and joint_account_balance >= contribution_cost
         ):
             return {
                 "type": "plot_join",
@@ -2959,7 +3139,7 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
         ),
         None,
     )
-    if commander_id == player_id and ready_sympathizer is not None and int(plot.get("stage", 0) or 0) >= 2 and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("supply", 0) or 0) >= 1:
+    if commander_id == player_id and ready_sympathizer is not None and int(plot.get("stage", 0) or 0) >= 1 and float(plot.get("support", 0) or 0) >= 2 and float(plot.get("supply", 0) or 0) >= 1:
         return {
             "type": "plot_action",
             "action_type": "convert_to_organizer",
@@ -2984,6 +3164,60 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
                 "target_player_id": int(viable_request.get("player_id") or 0),
                 "reason": "expand_command_structure",
             }
+
+    if strategic_goal == "seize_property" and strategic_goal_property_id is not None:
+        targeted_entry = next(
+            (entry for entry in legal_targets if int(entry.get("property_id") or 0) == strategic_goal_property_id),
+            None,
+        )
+        if targeted_entry is not None and player_id in committed_member_ids:
+            if float(plot.get("support", 0) or 0) >= 6 and float(plot.get("supply", 0) or 0) >= 4:
+                return {
+                    "type": "plot_action",
+                    "action_type": "attempt_seizure",
+                    "property_id": strategic_goal_property_id,
+                    "reason": "follow_commander_goal",
+                }
+            if float(plot.get("support", 0) or 0) >= 2:
+                return {
+                    "type": "plot_action",
+                    "action_type": "agitate_property",
+                    "property_id": strategic_goal_property_id,
+                    "reason": "prepare_commander_target",
+                }
+
+    if strategic_goal == "fortify_region":
+        fortify_target = next(
+            (
+                entry
+                for entry in seized_properties
+                if not strategic_goal_region or str(entry.get("region") or "") == strategic_goal_region
+            ),
+            None,
+        )
+        if fortify_target is not None and float(plot.get("supply", 0) or 0) >= 2:
+            return {
+                "type": "plot_action",
+                "action_type": "fortify_property",
+                "property_id": int(fortify_target.get("property_id") or 0),
+                "reason": "follow_commander_goal",
+            }
+
+    if strategic_goal == "increase_supply" and float(plot.get("support", 0) or 0) >= 2:
+        return {
+            "type": "plot_action",
+            "action_type": "stockpile_supply",
+            "region": strategic_goal_region or (region_order[0] if region_order else None),
+            "reason": "follow_commander_goal",
+        }
+
+    if strategic_goal == "build_support" and float(plot.get("support", 0) or 0) >= 2 and region_order:
+        return {
+            "type": "plot_action",
+            "action_type": "mutual_aid",
+            "region": strategic_goal_region or region_order[0],
+            "reason": "follow_commander_goal",
+        }
 
     highest_reintegration = int(seized_properties[0].get("reintegration_progress", 0) or 0) if seized_properties else 0
     if seized_properties and highest_reintegration >= 70 and float(plot.get("supply", 0) or 0) >= 3:
@@ -3086,6 +3320,15 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             "reason": "grow_faction_depth",
         }
 
+    # Seeding cells is required for stage advancement — prioritise over mutual_aid at stage ≤ 2
+    if unseeded_regions and int(plot.get("stage", 0) or 0) <= 2 and float(plot.get("support", 0) or 0) >= 3:
+        return {
+            "type": "plot_action",
+            "action_type": "seed_cell",
+            "region": unseeded_regions[0],
+            "reason": "expand_hidden_network",
+        }
+
     if region_order and int(plot.get("stage", 0) or 0) <= 1 and float(plot.get("support", 0) or 0) >= 2:
         return {
             "type": "plot_action",
@@ -3094,12 +3337,13 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
             "reason": "keep_support_alive",
         }
 
-    if unseeded_regions and int(plot.get("stage", 0) or 0) <= 2 and float(plot.get("support", 0) or 0) >= 3:
+    # Whisper campaign costs only 1 support — use it when too low for anything else at stage 1
+    if region_order and int(plot.get("stage", 0) or 0) <= 1 and float(plot.get("support", 0) or 0) >= 1:
         return {
             "type": "plot_action",
-            "action_type": "seed_cell",
-            "region": unseeded_regions[0],
-            "reason": "expand_hidden_network",
+            "action_type": "whisper_campaign",
+            "region": region_order[0],
+            "reason": "build_underground_presence",
         }
 
     if int(plot.get("stage", 0) or 0) >= 2 and float(plot.get("support", 0) or 0) >= 2:
@@ -3138,8 +3382,96 @@ def choose_plot_management_action(player: dict, game_state: dict, profile: dict[
     return None
 
 
+def choose_liberal_democracy_finance_action(
+    player: dict,
+    game_state: dict,
+    profile: dict[str, Any],
+    regime: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    regime = regime or build_regime_summary(player, game_state, profile)
+    if regime.get("government_type") != "liberal_democracy":
+        return None
+    archetype = str(profile.get("archetype") or "")
+    doctrine = choose_bot_doctrine(player, game_state, profile, regime)
+    if archetype != "liberal_democrat" and doctrine != "capital_markets_arbitrage":
+        return None
+
+    player_id = int(player.get("id") or 0)
+    current_round = int(game_state.get("current_round", 1) or 1)
+    redis_key = f"game:{game_state.get('match_id', 0)}:bot:{player_id}:ld_finance_round"
+    if redis_client is not None and redis_client.get(redis_key) == str(current_round):
+        return None
+
+    balance = float(player.get("balance", 0) or 0)
+    soft_reserve = float(regime.get("soft_reserve", 260.0) or 260.0)
+    market = dict((game_state.get("econ") or {}).get("market") or {})
+    assets = dict(market.get("assets") or {})
+    sentiment = float(market.get("sentiment", (game_state.get("econ") or {}).get("market_confidence", 70)) or 70)
+    loan_principal = float(player.get("bank_loan_principal", 0) or 0)
+    savings = float(player.get("bank_savings_balance", 0) or 0)
+    difficulty = normalize_bot_difficulty(profile.get("difficulty") or infer_legacy_difficulty(profile.get("persona")))
+
+    if loan_principal > 0 and balance > soft_reserve + 140.0:
+        return {
+            "type": "bank_action",
+            "bank_action": "repay",
+            "amount": round(min(loan_principal, max(50.0, balance - soft_reserve)), 2),
+            "reason": "reduce_bank_leverage",
+        }
+
+    if savings < 220.0 and balance > soft_reserve + 260.0:
+        return {
+            "type": "bank_action",
+            "bank_action": "deposit",
+            "amount": round(min(220.0 - savings, balance - soft_reserve), 2),
+            "reason": "build_savings_buffer",
+        }
+
+    if difficulty in {"hard", "expert"} and loan_principal <= 0 and balance < soft_reserve and sentiment >= 68.0:
+        return {
+            "type": "bank_action",
+            "bank_action": "loan",
+            "amount": 250.0,
+            "reason": "use_bank_leverage_for_market_entry",
+        }
+
+    investable_cash = balance - soft_reserve
+    if investable_cash < 120.0 or not assets:
+        return None
+
+    ranked_assets = sorted(
+        assets.values(),
+        key=lambda asset: (
+            str(asset.get("kind") or "") == "stock",
+            float(asset.get("price_change_last_round", 0) or 0),
+            -float(asset.get("volatility", 0) or 0),
+        ),
+        reverse=True,
+    )
+    asset = dict(ranked_assets[0] or {})
+    asset_key = str(asset.get("asset_key") or "")
+    price = float(asset.get("price", 0) or 0)
+    if not asset_key or price <= 0:
+        return None
+    if str(asset.get("kind") or "") == "stock":
+        quantity = max(1, int(min(3, investable_cash // price)))
+    else:
+        quantity = round(min(2.0, investable_cash / price), 4)
+    if quantity <= 0:
+        return None
+    return {
+        "type": "market_order",
+        "asset_key": asset_key,
+        "side": "buy",
+        "quantity": quantity,
+        "reason": "liberal_democrat_market_allocation",
+    }
+
+
 def choose_management_action(player: dict, game_state: dict, profile: dict[str, Any]) -> dict[str, Any] | None:
     regime = build_regime_summary(player, game_state, profile)
+    if regime.get("difficulty") in {"hard", "expert"}:
+        ensure_hidden_bot_partnerships(game_state, current_player_id=int(player.get("id") or 0), current_profile=profile)
     doctrine = choose_bot_doctrine(player, game_state, profile, regime)
     debt_action = choose_liquidation_action(player, game_state, profile)
     if debt_action is not None:
@@ -3156,6 +3488,10 @@ def choose_management_action(player: dict, game_state: dict, profile: dict[str, 
     negotiation_move = choose_negotiation_move(player, game_state, profile, regime)
     if negotiation_move is not None:
         return negotiation_move
+
+    finance_action = choose_liberal_democracy_finance_action(player, game_state, profile, regime)
+    if finance_action is not None:
+        return finance_action
 
     lobbying_move = choose_lobbying_move(player, game_state, profile)
     if lobbying_move is not None and doctrine in {"policy_shaping", "treasury_rebuild_then_leverage"}:
@@ -4041,7 +4377,8 @@ def _execute_property_decision(match_id: int, player_id: int) -> None:
             return
         pending_action = game_state.get("pending_action") or {}
         pending_turn = game_state.get("pending_turn_context") or {}
-        if pending_action.get("type") != "buy_property" or pending_action.get("player_id") != player_id:
+        pending_type = pending_action.get("type")
+        if pending_type not in {"buy_property", "buy_corporate_property"} or pending_action.get("player_id") != player_id:
             return
 
         profile = ensure_bot_profile(match_player, game_state.get("settings", {}))
@@ -4050,14 +4387,28 @@ def _execute_property_decision(match_id: int, player_id: int) -> None:
         if player is None or prop is None:
             return
 
-        decision = choose_property_purchase(player, prop, game_state, profile)
-        decision_name = str(decision.get("decision") or "decline")
+        if pending_type == "buy_corporate_property":
+            listing_price = float(prop.get("corporate_listing_price", 0) or 0)
+            reserve_floor = float(profile.get("liquidity", {}).get("reserve_cash_floor", 260) or 260)
+            is_liberal_democrat = str(profile.get("archetype") or "") == "liberal_democrat"
+            decision_name = "buy" if is_liberal_democrat and listing_price > 0 and float(player.get("balance", 0) or 0) >= listing_price + reserve_floor else "decline"
+        else:
+            decision = choose_property_purchase(player, prop, game_state, profile)
+            decision_name = str(decision.get("decision") or "decline")
         if decision_name in attempted_decisions:
             break
         attempted_decisions.add(decision_name)
 
         if decision_name == "buy":
+            if pending_type == "buy_corporate_property":
+                if _bot_buy_corporate_property(match_id, player_id, prop, pending_turn.get("dice_result")):
+                    return
+                continue
             if _bot_buy_property(match_id, player_id, prop, pending_turn.get("dice_result")):
+                return
+            continue
+        if pending_type == "buy_corporate_property":
+            if _bot_decline_corporate_property(match_id, player_id, prop, pending_turn.get("dice_result")):
                 return
             continue
         if _bot_decline_property(match_id, player_id, prop, pending_turn.get("dice_result")):
@@ -4068,10 +4419,12 @@ def _execute_property_decision(match_id: int, player_id: int) -> None:
         return
     pending_action = game_state.get("pending_action") or {}
     pending_turn = game_state.get("pending_turn_context") or {}
-    if pending_action.get("type") != "buy_property" or pending_action.get("player_id") != player_id:
+    if pending_action.get("type") not in {"buy_property", "buy_corporate_property"} or pending_action.get("player_id") != player_id:
         return
 
     prop = next((entry for entry in game_state.get("properties", []) if entry.get("id") == pending_action.get("property_id")), None)
+    if prop is not None and pending_action.get("type") == "buy_corporate_property" and _bot_decline_corporate_property(match_id, player_id, prop, pending_turn.get("dice_result")):
+        return
     if prop is not None and _bot_decline_property(match_id, player_id, prop, pending_turn.get("dice_result")):
         return
 
@@ -4193,6 +4546,10 @@ def _execute_management_action(match_id: int, player_id: int, action: dict[str, 
         return _bot_submit_negotiation(match_id, player_id, action)
     if action_type == "emergency_reform":
         return _bot_apply_emergency_reform(match_id, player_id, action)
+    if action_type == "market_order":
+        return _bot_submit_market_order(match_id, player_id, action)
+    if action_type == "bank_action":
+        return _bot_apply_bank_action(match_id, player_id, action)
     if action_type == "plot_start":
         return _bot_plot_start(match_id, player_id)
     if action_type == "plot_action":
@@ -4200,7 +4557,7 @@ def _execute_management_action(match_id: int, player_id: int, action: dict[str, 
     if action_type == "plot_join":
         return _bot_plot_join(match_id, player_id, action)
     if action_type == "plot_leave":
-        return _bot_plot_leave(match_id, player_id)
+        return _bot_plot_leave(match_id, player_id, action)
     if action_type == "plot_counter_action":
         return _bot_plot_counter_action(match_id, player_id, action)
     if action_type == "deal":
@@ -4259,6 +4616,97 @@ def _bot_buy_property(match_id: int, player_id: int, prop: dict, dice_result: di
             "property_name": prop.get("name"),
         },
         room=str(match_id),
+    )
+    finalize_turn_resolution(next_state, player_id, dice_result or {"is_doubles": False}, match_id, redis_client, socketio)
+    return True
+
+
+def _bot_buy_corporate_property(match_id: int, player_id: int, prop: dict, dice_result: dict | None) -> bool:
+    game_state = load_game_state(match_id, redis_client)
+    if not game_state:
+        return False
+    try:
+        next_state, result = execute_liberal_democracy_buyout(
+            game_state,
+            player_id=player_id,
+            property_id=int(prop.get("id") or 0),
+        )
+    except ValueError:
+        return False
+
+    db_prop = Property.query.get(prop["id"])
+    if db_prop:
+        db_prop.owner_id = player_id
+    mp = MatchPlayer.query.get(player_id)
+    result_player = result.get("player") or {}
+    if mp and result_player:
+        mp.balance = float(result_player.get("balance", mp.balance) or mp.balance)
+    db.session.commit()
+
+    player_name = result_player.get("username", "Bot")
+    next_state = log_and_broadcast(
+        next_state,
+        "property_purchased",
+        f"{player_name} bought out {result.get('property_name', prop.get('name', 'the property'))} for ${float(result.get('price', 0) or 0):.2f}.",
+        match_id,
+        redis_client,
+        socketio,
+        player_id=player_id,
+    )
+    socketio.emit(
+        "property_purchased",
+        {
+            "player_id": player_id,
+            "player_name": player_name,
+            "property_id": result.get("property_id"),
+            "position": prop.get("board_position"),
+            "price": result.get("price"),
+            "property_name": result.get("property_name"),
+            "is_corporate_buyout": True,
+        },
+        room=str(match_id),
+    )
+    finalize_turn_resolution(next_state, player_id, dice_result or {"is_doubles": False}, match_id, redis_client, socketio)
+    return True
+
+
+def _bot_decline_corporate_property(match_id: int, player_id: int, prop: dict, dice_result: dict | None) -> bool:
+    game_state = load_game_state(match_id, redis_client)
+    if not game_state:
+        return False
+    player = next((entry for entry in game_state.get("players", []) if entry.get("id") == player_id), None)
+    if player is None:
+        return False
+    rent_amount = round(float(prop.get("corporate_rent", 0) or 0), 2)
+    try:
+        next_state, updated_player = spend_player_balance(game_state, player_id, rent_amount)
+    except ValueError:
+        return False
+
+    econ = dict(next_state.get("econ", {}) or {})
+    corporations = dict(((econ.get("corporations") or {}).get("by_id") or {}))
+    corporation_id = prop.get("corporate_owner_id")
+    if corporation_id and str(corporation_id) in corporations:
+        corporation = dict(corporations[str(corporation_id)] or {})
+        corporation["cash_reserve"] = round(float(corporation.get("cash_reserve", 0) or 0) + rent_amount, 2)
+        corporation["rent_income_last_round"] = round(float(corporation.get("rent_income_last_round", 0) or 0) + rent_amount, 2)
+        corporations[str(corporation_id)] = corporation
+        econ["corporations"] = {**dict(econ.get("corporations") or {}), "by_id": corporations}
+        next_state["econ"] = econ
+
+    mp = MatchPlayer.query.get(player_id)
+    if mp and updated_player:
+        mp.balance = float(updated_player.get("balance", mp.balance) or mp.balance)
+    db.session.commit()
+
+    next_state = log_and_broadcast(
+        next_state,
+        "rent_collected",
+        f"{player.get('username', 'Bot')} declined a corporate buyout on {prop.get('name', 'the property')} and paid ${rent_amount:.2f}.",
+        match_id,
+        redis_client,
+        socketio,
+        player_id=player_id,
     )
     finalize_turn_resolution(next_state, player_id, dice_result or {"is_doubles": False}, match_id, redis_client, socketio)
     return True
@@ -4623,6 +5071,80 @@ def _bot_apply_emergency_reform(match_id: int, player_id: int, action: dict[str,
     return True
 
 
+def _finalize_liberal_democracy_bot_action(match_id: int, player_id: int, next_state: dict, result: dict, event_type: str, summary: str) -> bool:
+    player = result.get("player") or next((entry for entry in next_state.get("players", []) if int(entry.get("id") or 0) == player_id), None)
+    mp = MatchPlayer.query.get(player_id)
+    if mp and player:
+        mp.balance = float(player.get("balance", mp.balance) or mp.balance)
+    db.session.commit()
+    if redis_client is not None:
+        redis_client.set(
+            f"game:{match_id}:bot:{player_id}:ld_finance_round",
+            str(next_state.get("current_round", 1)),
+            ex=BOT_TASK_TTL_SECONDS,
+        )
+    next_state = log_and_broadcast(
+        next_state,
+        event_type,
+        summary,
+        match_id,
+        redis_client,
+        socketio,
+        player_id=player_id,
+    )
+    persist_game_state(next_state, match_id, redis_client)
+    broadcast_game_state_snapshot(socketio, match_id, next_state)
+    return True
+
+
+def _bot_submit_market_order(match_id: int, player_id: int, action: dict[str, Any]) -> bool:
+    game_state = load_game_state(match_id, redis_client)
+    if not game_state:
+        return False
+    try:
+        next_state, result = execute_liberal_democracy_market_order(
+            game_state,
+            player_id=player_id,
+            asset_key=str(action.get("asset_key") or ""),
+            side=str(action.get("side") or "buy"),
+            quantity=float(action.get("quantity", 0) or 0),
+        )
+    except ValueError:
+        return False
+    player_name = (result.get("player") or {}).get("username", "Bot")
+    summary = f"{player_name} placed a {result.get('side', 'buy')} order for {result.get('quantity')} {result.get('asset_key')}."
+    return _finalize_liberal_democracy_bot_action(match_id, player_id, next_state, result, "market_order_submitted", summary)
+
+
+def _bot_apply_bank_action(match_id: int, player_id: int, action: dict[str, Any]) -> bool:
+    game_state = load_game_state(match_id, redis_client)
+    if not game_state:
+        return False
+    amount = float(action.get("amount", 0) or 0)
+    action_name = str(action.get("bank_action") or "")
+    executor = {
+        "deposit": execute_liberal_democracy_deposit,
+        "withdraw": execute_liberal_democracy_withdraw,
+        "loan": execute_liberal_democracy_loan,
+        "repay": execute_liberal_democracy_repay,
+    }.get(action_name)
+    if executor is None:
+        return False
+    try:
+        next_state, result = executor(game_state, player_id=player_id, amount=amount)
+    except ValueError:
+        return False
+    player_name = (result.get("player") or {}).get("username", "Bot")
+    verb = {
+        "deposit": "deposited",
+        "withdraw": "withdrew",
+        "loan": "borrowed",
+        "repay": "repaid",
+    }.get(action_name, "used the bank for")
+    summary = f"{player_name} {verb} ${float(result.get('amount', amount) or amount):.2f}."
+    return _finalize_liberal_democracy_bot_action(match_id, player_id, next_state, result, "bank_action_submitted", summary)
+
+
 def _extract_plot_payload(action: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
@@ -4693,12 +5215,16 @@ def _bot_plot_join(match_id: int, player_id: int, action: dict[str, Any]) -> boo
     return _finalize_plot_bot_action(match_id, player_id, next_state, result, "plot_membership")
 
 
-def _bot_plot_leave(match_id: int, player_id: int) -> bool:
+def _bot_plot_leave(match_id: int, player_id: int, action: dict[str, Any] | None = None) -> bool:
     game_state = load_game_state(match_id, redis_client)
     if not game_state:
         return False
     try:
-        next_state, result = submit_plot_leave(game_state, player_id=player_id)
+        next_state, result = submit_plot_leave(
+            game_state,
+            player_id=player_id,
+            reason=str((action or {}).get("reason") or ""),
+        )
     except ValueError:
         return False
     return _finalize_plot_bot_action(match_id, player_id, next_state, result, "plot_membership")

@@ -29,11 +29,11 @@ export default function DealsWidget() {
   }
 
   return (
-    <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+    <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/15 p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Deals</h3>
+        <h3 className="text-xs font-semibold text-emerald-300 uppercase tracking-wider">Deals</h3>
         {overflowCount > 0 && (
-          <span className="text-[11px] text-gray-500">+{overflowCount} more</span>
+          <span className="text-[11px] text-emerald-700">+{overflowCount} more</span>
         )}
       </div>
 

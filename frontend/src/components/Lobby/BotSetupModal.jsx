@@ -11,11 +11,11 @@ function difficultyStyle(key) {
   return DIFFICULTY_STYLES[key] || 'border-gray-700 bg-gray-900 text-gray-200';
 }
 
-function PersonalitySummary({ personality }) {
-  if (!personality) {
+function ArchetypeSummary({ archetype }) {
+  if (!archetype) {
     return (
       <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-4 text-sm text-gray-400">
-        Select a personality to preview its doctrine and behavior.
+        Select an archetype to preview its behavior.
       </div>
     );
   }
@@ -24,13 +24,13 @@ function PersonalitySummary({ personality }) {
     <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-gray-500">Profile</p>
-          <h3 className="mt-1 text-lg font-semibold text-white">{personality.label}</h3>
+          <p className="text-xs uppercase tracking-[0.28em] text-gray-500">Archetype</p>
+          <h3 className="mt-1 text-lg font-semibold text-white">{archetype.label}</h3>
         </div>
         <div className="flex flex-wrap justify-end gap-1.5">
-          {personality.allowed_difficulties.map((difficulty) => (
+          {['easy', 'normal', 'hard', 'expert'].map((difficulty) => (
             <span
-              key={`${personality.key}-${difficulty}`}
+              key={`${archetype.key}-${difficulty}`}
               className={`rounded-full border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide ${difficultyStyle(difficulty)}`}
             >
               {difficulty}
@@ -38,11 +38,11 @@ function PersonalitySummary({ personality }) {
           ))}
         </div>
       </div>
-      <p className="text-sm leading-6 text-gray-300">{personality.short_description}</p>
+      <p className="text-sm leading-6 text-gray-300">{archetype.short_description}</p>
       <div>
         <p className="text-[11px] uppercase tracking-[0.24em] text-gray-500">Example Behaviors</p>
         <div className="mt-2 space-y-2">
-          {personality.example_behaviors.map((behavior) => (
+          {(archetype.example_behaviors || []).map((behavior) => (
             <p key={behavior} className="text-sm text-gray-300">{behavior}</p>
           ))}
         </div>
@@ -50,9 +50,9 @@ function PersonalitySummary({ personality }) {
       <div>
         <p className="text-[11px] uppercase tracking-[0.24em] text-gray-500">Preferred Doctrines</p>
         <div className="mt-2 flex flex-wrap gap-2">
-          {personality.preferred_doctrines.map((doctrine) => (
+          {(archetype.preferred_doctrines || []).map((doctrine) => (
             <span
-              key={`${personality.key}-${doctrine}`}
+              key={`${archetype.key}-${doctrine}`}
               className="rounded-full border border-cyan-900/80 bg-cyan-950/30 px-2 py-1 text-[11px] font-semibold text-cyan-200"
             >
               {doctrine.replace(/_/g, ' ')}
@@ -102,45 +102,35 @@ export default function BotSetupModal({
   error,
 }) {
   const difficulties = botSetup?.difficulties || [];
-  const personalities = botSetup?.personalities || [];
+  const archetypes = botSetup?.archetypes || botSetup?.personalities || [];
   const defaultDifficulty = botSetup?.defaults?.difficulty || difficulties[1]?.key || difficulties[0]?.key || 'normal';
+  const defaultArchetype = botSetup?.defaults?.archetype_by_difficulty?.[defaultDifficulty]
+    || botSetup?.defaults?.personality_by_difficulty?.[defaultDifficulty]
+    || archetypes[0]?.key
+    || '';
 
   const [count, setCount] = useState(1);
   const [difficulty, setDifficulty] = useState(defaultDifficulty);
-  const [persona, setPersona] = useState(botSetup?.defaults?.personality_by_difficulty?.[defaultDifficulty] || '');
+  const [archetype, setArchetype] = useState(defaultArchetype);
   const [submitting, setSubmitting] = useState(false);
   const [updatingPlayerId, setUpdatingPlayerId] = useState(null);
   const [removingPlayerId, setRemovingPlayerId] = useState(null);
 
-  const personalitiesByDifficulty = useMemo(() => {
-    const byDifficulty = {};
-    personalities.forEach((entry) => {
-      entry.allowed_difficulties.forEach((allowedDifficulty) => {
-        byDifficulty[allowedDifficulty] = [...(byDifficulty[allowedDifficulty] || []), entry];
-      });
-    });
-    return byDifficulty;
-  }, [personalities]);
-
-  const availablePersonalities = useMemo(
-    () => personalitiesByDifficulty[difficulty] || [],
-    [difficulty, personalitiesByDifficulty],
-  );
-
-  const selectedQuickPersonality = useMemo(
-    () => availablePersonalities.find((entry) => entry.key === persona) || availablePersonalities[0] || null,
-    [availablePersonalities, persona],
+  const availableArchetypes = useMemo(() => archetypes, [archetypes]);
+  const selectedQuickArchetype = useMemo(
+    () => availableArchetypes.find((entry) => entry.key === archetype) || availableArchetypes[0] || null,
+    [archetype, availableArchetypes],
   );
 
   useEffect(() => {
-    if (!availablePersonalities.length) {
-      setPersona('');
+    if (!availableArchetypes.length) {
+      setArchetype('');
       return;
     }
-    if (!availablePersonalities.some((entry) => entry.key === persona)) {
-      setPersona(availablePersonalities[0].key);
+    if (!availableArchetypes.some((entry) => entry.key === archetype)) {
+      setArchetype(availableArchetypes[0].key);
     }
-  }, [availablePersonalities, persona]);
+  }, [archetype, availableArchetypes]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -155,7 +145,7 @@ export default function BotSetupModal({
   }
 
   const handleAddBots = async () => {
-    if (!selectedQuickPersonality || openSeats <= 0) {
+    if (!selectedQuickArchetype || openSeats <= 0) {
       return;
     }
     setSubmitting(true);
@@ -163,7 +153,7 @@ export default function BotSetupModal({
       await onAddBots({
         count: Math.max(1, Math.min(openSeats, count)),
         difficulty,
-        persona: selectedQuickPersonality.key,
+        archetype: selectedQuickArchetype.key,
       });
       setCount(1);
     } finally {
@@ -172,25 +162,21 @@ export default function BotSetupModal({
   };
 
   const updateBotDifficulty = async (bot, nextDifficulty) => {
-    const compatiblePersonalities = personalitiesByDifficulty[nextDifficulty] || [];
-    const nextPersona = compatiblePersonalities.some((entry) => entry.key === bot.bot_persona)
-      ? bot.bot_persona
-      : compatiblePersonalities[0]?.key;
-    if (!nextPersona) {
-      return;
-    }
     setUpdatingPlayerId(bot.id);
     try {
-      await onUpdateBot(bot.id, { difficulty: nextDifficulty, persona: nextPersona });
+      await onUpdateBot(bot.id, {
+        difficulty: nextDifficulty,
+        archetype: bot.bot_archetype || selectedQuickArchetype?.key || availableArchetypes[0]?.key,
+      });
     } finally {
       setUpdatingPlayerId(null);
     }
   };
 
-  const updateBotPersona = async (bot, nextPersona) => {
+  const updateBotArchetype = async (bot, nextArchetype) => {
     setUpdatingPlayerId(bot.id);
     try {
-      await onUpdateBot(bot.id, { difficulty: bot.bot_difficulty, persona: nextPersona });
+      await onUpdateBot(bot.id, { difficulty: bot.bot_difficulty, archetype: nextArchetype });
     } finally {
       setUpdatingPlayerId(null);
     }
@@ -207,13 +193,13 @@ export default function BotSetupModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="w-full max-w-5xl max-h-[calc(100vh-2rem)] overflow-hidden rounded-3xl border border-gray-800 bg-gray-950 shadow-2xl flex flex-col">
+      <div className="w-full max-w-7xl max-h-[calc(100vh-2rem)] overflow-hidden rounded-3xl border border-gray-800 bg-gray-950 shadow-2xl flex flex-col">
         <div className="flex items-start justify-between gap-4 border-b border-gray-800 px-6 py-5">
           <div>
             <p className="text-xs uppercase tracking-[0.32em] text-cyan-400">Bot Setup</p>
-            <h2 className="mt-2 text-2xl font-bold text-white">Per-bot difficulty and personality</h2>
+            <h2 className="mt-2 text-2xl font-bold text-white">Per-bot difficulty and archetype</h2>
             <p className="mt-1 text-sm text-gray-400">
-              Quick-add a configured bot batch, then refine individual bots inline without touching the main settings column.
+              Pick a government-style archetype, then let difficulty control foresight and risk appetite.
             </p>
           </div>
           <button
@@ -231,7 +217,7 @@ export default function BotSetupModal({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-white">Quick Add</p>
-                  <p className="mt-1 text-xs text-gray-400">Choose a difficulty, then pick a compatible personality profile.</p>
+                  <p className="mt-1 text-xs text-gray-400">Choose a difficulty, then pick the archetype you want in the lobby.</p>
                 </div>
                 <span className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs font-semibold text-gray-300">
                   {openSeats} open seat{openSeats === 1 ? '' : 's'}
@@ -280,13 +266,13 @@ export default function BotSetupModal({
                   </div>
 
                   <div>
-                    <label className="block text-[11px] uppercase tracking-[0.24em] text-gray-500">Personality</label>
+                    <label className="block text-[11px] uppercase tracking-[0.24em] text-gray-500">Archetype</label>
                     <select
-                      value={selectedQuickPersonality?.key || ''}
-                      onChange={(event) => setPersona(event.target.value)}
+                      value={selectedQuickArchetype?.key || ''}
+                      onChange={(event) => setArchetype(event.target.value)}
                       className="mt-2 w-full rounded-2xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-white focus:border-cyan-500 focus:outline-none"
                     >
-                      {availablePersonalities.map((entry) => (
+                      {availableArchetypes.map((entry) => (
                         <option key={entry.key} value={entry.key}>{entry.label}</option>
                       ))}
                     </select>
@@ -295,21 +281,21 @@ export default function BotSetupModal({
                   <button
                     type="button"
                     onClick={handleAddBots}
-                    disabled={submitting || !selectedQuickPersonality || openSeats <= 0}
+                    disabled={submitting || !selectedQuickArchetype || openSeats <= 0}
                     className="w-full rounded-2xl bg-cyan-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:cursor-not-allowed disabled:bg-gray-800 disabled:text-gray-500"
                   >
                     {submitting ? 'Adding bots…' : 'Add Bots'}
                   </button>
                 </div>
 
-                <PersonalitySummary personality={selectedQuickPersonality} />
+                <ArchetypeSummary archetype={selectedQuickArchetype} />
               </div>
             </div>
 
             <div className="rounded-3xl border border-gray-800 bg-gray-950/80 p-5 space-y-4">
               <div>
-                <p className="text-sm font-semibold text-white">Advanced</p>
-                <p className="mt-1 text-xs text-gray-400">Adjust difficulty and personality per bot without removing them from the lobby.</p>
+                <p className="text-sm font-semibold text-white">Manage Existing Bots</p>
+                <p className="mt-1 text-xs text-gray-400">Adjust difficulty and archetype per bot without removing them from the lobby.</p>
               </div>
 
               {error && (
@@ -325,10 +311,11 @@ export default function BotSetupModal({
               ) : (
                 <div className="space-y-3">
                   {bots.map((bot) => {
-                    const compatiblePersonalities = personalitiesByDifficulty[bot.bot_difficulty] || [];
-                    const selectedBotPersonality = compatiblePersonalities.find((entry) => entry.key === bot.bot_persona)
-                      || personalities.find((entry) => entry.key === bot.bot_persona)
-                      || null;
+                    const selectedBotArchetype = availableArchetypes.find((entry) => (
+                      entry.key === bot.bot_archetype
+                      || entry.key === bot.bot_persona
+                    )) || availableArchetypes[0] || null;
+                    const selectedBotArchetypeKey = selectedBotArchetype?.key || '';
                     const rowBusy = updatingPlayerId === bot.id || removingPlayerId === bot.id;
 
                     return (
@@ -363,14 +350,14 @@ export default function BotSetupModal({
                             </select>
                           </label>
                           <label className="text-xs text-gray-400">
-                            Personality
+                            Archetype
                             <select
-                              value={bot.bot_persona}
+                              value={selectedBotArchetypeKey}
                               disabled={rowBusy}
-                              onChange={(event) => updateBotPersona(bot, event.target.value)}
+                              onChange={(event) => updateBotArchetype(bot, event.target.value)}
                               className="mt-2 w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white focus:border-cyan-500 focus:outline-none"
                             >
-                              {compatiblePersonalities.map((entry) => (
+                              {availableArchetypes.map((entry) => (
                                 <option key={`${bot.id}-${entry.key}`} value={entry.key}>{entry.label}</option>
                               ))}
                             </select>
@@ -383,11 +370,11 @@ export default function BotSetupModal({
                               {bot.bot_difficulty_label || bot.bot_difficulty}
                             </span>
                             <span className="rounded-full border border-indigo-900/70 bg-indigo-950/30 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-200">
-                              {selectedBotPersonality?.label || bot.bot_persona_label || bot.bot_persona}
+                              {selectedBotArchetype?.label || bot.bot_archetype_label || bot.bot_archetype}
                             </span>
                           </div>
                           <p className="text-sm text-gray-300">
-                            {selectedBotPersonality?.short_description || bot.bot_persona_description}
+                            {selectedBotArchetype?.short_description || bot.bot_archetype_description || bot.bot_persona_description}
                           </p>
                         </div>
                       </div>

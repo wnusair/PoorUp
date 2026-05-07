@@ -14,6 +14,67 @@ def round_money(value: float | int | None) -> float:
     return round(float(value or 0), 2)
 
 
+def _coerce_plot_state(game_state: dict | None) -> tuple[dict, dict, dict]:
+    next_state = dict(game_state or {})
+    social = dict(next_state.get("social") or {})
+    plot = dict(social.get("plot") or {})
+    return next_state, social, plot
+
+
+def _plot_member_is_active(plot: dict, player_id: int) -> bool:
+    member = dict((plot.get("members") or {}).get(str(player_id)) or {})
+    return bool(plot.get("exists")) and bool(member) and bool(member.get("active", True))
+
+
+def _apply_plot_joint_account_diversion(
+    game_state: dict,
+    player_id: int,
+    amount: float,
+) -> tuple[dict, float, float]:
+    diverted_amount = 0.0
+    net_amount = round_money(amount)
+    if net_amount <= 0:
+        return game_state, diverted_amount, net_amount
+
+    next_state, social, plot = _coerce_plot_state(game_state)
+    if not _plot_member_is_active(plot, player_id):
+        return next_state, diverted_amount, net_amount
+
+    contribution_rate = round_money(plot.get("joint_account_contribution_rate", 0.4) or 0.4)
+    if contribution_rate <= 0:
+        return next_state, diverted_amount, net_amount
+
+    diverted_amount = round_money(net_amount * contribution_rate)
+    if diverted_amount <= 0:
+        return next_state, 0.0, net_amount
+
+    net_amount = round_money(net_amount - diverted_amount)
+    plot["joint_account_balance"] = round_money(
+        float(plot.get("joint_account_balance", 0) or 0) + diverted_amount
+    )
+
+    contribution_totals = {
+        str(key): round_money(value)
+        for key, value in (plot.get("joint_account_contributions") or {}).items()
+    }
+    contribution_totals[str(player_id)] = round_money(
+        float(contribution_totals.get(str(player_id), 0) or 0) + diverted_amount
+    )
+    plot["joint_account_contributions"] = contribution_totals
+
+    members = {str(key): dict(value) for key, value in (plot.get("members") or {}).items()}
+    member = dict(members.get(str(player_id)) or {})
+    member["cash_contributed"] = round_money(
+        float(member.get("cash_contributed", 0) or 0) + diverted_amount
+    )
+    members[str(player_id)] = member
+    plot["members"] = members
+
+    social["plot"] = plot
+    next_state["social"] = social
+    return next_state, diverted_amount, net_amount
+
+
 def is_plot_poverty_locked(player: dict | None) -> bool:
     return bool((player or {}).get("plot_locked_poverty", False))
 
@@ -167,12 +228,16 @@ def _credit_player_direct(game_state: dict, player_id: int, amount: float) -> tu
     if amount <= 0:
         return game_state, get_player_state(game_state, player_id)
 
+    game_state, _, net_amount = _apply_plot_joint_account_diversion(game_state, player_id, amount)
+    if net_amount <= 0:
+        return game_state, get_player_state(game_state, player_id)
+
     player = get_player_state(game_state, player_id)
     if player is None:
         return game_state, None
 
     current_balance = round_money(player.get("balance", 0))
-    return set_player_balance(game_state, player_id, current_balance + amount)
+    return set_player_balance(game_state, player_id, current_balance + net_amount)
 
 
 def add_pending_player_debt(

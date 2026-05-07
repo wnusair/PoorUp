@@ -1,17 +1,13 @@
 import {
-  getActivePlayerCount,
   getClauseLabel,
   getClauseTone,
   getDealCounterpartyName,
-  getEffectiveBuildLoanMaxPayout,
   sortDealsForPlayer,
   summarizeClause,
 } from '../../utils/deals';
 
 export default function ActiveDealsPanel({ deals, players, properties, myPlayerId, selectedDealId, onSelect, economy }) {
   const sortedDeals = sortDealsForPlayer(deals, myPlayerId);
-  const activePlayerCount = getActivePlayerCount(players);
-  const privateEquityBonus = Number(economy?.private_equity_bonus_multiplier || 1);
 
   return (
     <div className="space-y-3">
@@ -83,17 +79,13 @@ export default function ActiveDealsPanel({ deals, players, properties, myPlayerI
                     .filter((clause) => clause.type === 'development_investment')
                     .slice(0, 2)
                     .map((clause) => {
-                      const effectiveMaxPayout = getEffectiveBuildLoanMaxPayout(
-                        Number(clause?.config?.max_payout || 0),
-                        privateEquityBonus,
-                        activePlayerCount,
-                      );
+                      const maxPayout = Number(clause?.config?.max_payout || 0);
                       const pairedImmunity = deal.clauses.some((entry) => entry.type === 'rent_immunity');
 
                       return (
                         <div key={`${deal.id}-${clause.id}-investment`} className="rounded-lg border border-gray-700 bg-gray-900/80 px-2.5 py-2">
                           <p>Unused escrow: ${(Number((clause?.config?.escrow_remaining ?? clause?.config?.escrow_amount) || 0)).toFixed(0)}</p>
-                          <p>Paid back: ${(Number(clause?.config?.payout_to_date || 0)).toFixed(0)} / ${effectiveMaxPayout.toFixed(0)}</p>
+                          <p>Paid back: ${(Number(clause?.config?.payout_to_date || 0)).toFixed(0)} / ${maxPayout.toFixed(0)}</p>
                           {pairedImmunity ? (
                             <p className="mt-1 text-[10px] leading-4 text-gray-500">Funded landings still repay this even if a no-rent clause blocks the visitor.</p>
                           ) : null}

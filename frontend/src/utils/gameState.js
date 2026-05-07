@@ -240,6 +240,16 @@ export function normalizeEconomy(economy = {}, gameState = {}) {
     economy.round_number ?? economy.current_round ?? gameState.current_round ?? gameState.round_number,
     1,
   );
+  const market = economy.market || {};
+  const bank = economy.bank || {};
+  const jobs = economy.jobs || {};
+  const corporations = economy.corporations || {};
+  const corporationEntries = corporations.by_id || corporations.entities || {};
+  const taxBrackets = Array.isArray(economy.tax_brackets)
+    ? economy.tax_brackets
+    : Array.isArray(economy.tax_brackets?.brackets)
+      ? economy.tax_brackets.brackets
+      : [];
 
   return {
     ...economy,
@@ -252,7 +262,7 @@ export function normalizeEconomy(economy = {}, gameState = {}) {
     rage: toNumber(economy.rage ?? gameState.social?.overall_rage ?? gameState.rage, 0),
     welfare_payout: toNumber(economy.welfare_payout, 0),
     treasury_balance: toNumber(economy.treasury_balance, 0),
-    market_confidence: toNumber(economy.market_confidence, 0),
+    market_confidence: toNumber(economy.market_confidence ?? market.sentiment, 0),
     capital_yield_rate: toNumber(economy.capital_yield_rate, 0),
     capital_yield_cap_per_player: toNumber(economy.capital_yield_cap_per_player, 0),
     capital_yield_reserve_floor: toNumber(economy.capital_yield_reserve_floor, 0),
@@ -262,6 +272,102 @@ export function normalizeEconomy(economy = {}, gameState = {}) {
     bailout_enabled: Boolean(economy.bailout_enabled ?? gameState.bailout_enabled ?? false),
     round_number: roundNumber,
     current_round: roundNumber,
+    market: {
+      ...market,
+      sentiment: toNumber(market.sentiment ?? economy.market_confidence, 0),
+      dividend_round_interval: toNumber(market.dividend_round_interval, 3),
+      cycle: {
+        ...(market.cycle || {}),
+        policy_pressure: toNumber(market?.cycle?.policy_pressure, 0),
+        bias: toNumber(market?.cycle?.bias, 0),
+        rounds_remaining: toNumber(market?.cycle?.rounds_remaining, 0),
+      },
+      history: Array.isArray(market.history)
+        ? market.history.map((entry = {}) => ({
+          ...entry,
+          round: toNumber(entry.round, 0),
+          sentiment: toNumber(entry.sentiment, 0),
+          average_price: toNumber(entry.average_price, 0),
+        }))
+        : [],
+      assets: Object.fromEntries(
+        Object.entries(market.assets || {}).map(([symbol, asset = {}]) => [
+          symbol,
+          {
+            ...asset,
+            price: toNumber(asset.price, 0),
+            change: toNumber(asset.change, 0),
+            price_change_last_round: toNumber(asset.price_change_last_round, 0),
+            volatility: toNumber(asset.volatility, 0),
+            shares_outstanding: toNumber(asset.shares_outstanding, 0),
+            history: Array.isArray(asset.history)
+              ? asset.history.map((entry = {}) => ({
+                ...entry,
+                round: toNumber(entry.round, 0),
+                price: toNumber(entry.price, 0),
+                change: toNumber(entry.change, 0),
+              }))
+              : [],
+          },
+        ]),
+      ),
+    },
+    bank: {
+      ...bank,
+      default_rate_spread: toNumber(bank.default_rate_spread, 0),
+      accounts: Object.fromEntries(
+        Object.entries(bank.accounts || {}).map(([playerId, account = {}]) => [
+          String(playerId),
+          {
+            ...account,
+            savings_balance: toNumber(account.savings_balance, 0),
+            loan_principal: toNumber(account.loan_principal, 0),
+            accrued_interest: toNumber(account.accrued_interest, 0),
+            missed_payments: toNumber(account.missed_payments, 0),
+            payment_due: toNumber(account.payment_due, 0),
+            rate: toNumber(account.rate, 0),
+          },
+        ]),
+      ),
+    },
+    jobs: {
+      ...jobs,
+      players: Object.fromEntries(
+        Object.entries(jobs.players || {}).map(([playerId, job = {}]) => [
+          String(playerId),
+          {
+            ...job,
+            salary: toNumber(job.salary, 0),
+            unemployed_rounds_remaining: toNumber(job.unemployed_rounds_remaining, 0),
+            events: Array.isArray(job.events) ? job.events : [],
+          },
+        ]),
+      ),
+    },
+    corporations: {
+      ...corporations,
+      by_id: Object.fromEntries(
+        Object.entries(corporationEntries).map(([corpId, entity = {}]) => [
+          String(corpId),
+          {
+            ...entity,
+            cash_reserve: toNumber(entity.cash_reserve, 0),
+            pricing_modifier: toNumber(entity.pricing_modifier, 0),
+            rent_income: toNumber(entity.rent_income, 0),
+            dividend_per_share: toNumber(entity.dividend_per_share, 0),
+            stock_price: toNumber(entity.stock_price, 0),
+            shares_outstanding: toNumber(entity.shares_outstanding, 0),
+          },
+        ]),
+      ),
+    },
+    tax_brackets: taxBrackets.map((bracket = {}, index) => ({
+      ...bracket,
+      id: bracket.id || `tier_${index + 1}`,
+      lower_bound: toNumber(bracket.lower_bound, index === 0 ? 0 : null),
+      upper_bound: bracket.upper_bound == null ? null : toNumber(bracket.upper_bound, null),
+      rate: toNumber(bracket.rate, 0),
+    })),
   };
 }
 
@@ -287,6 +393,9 @@ export function normalizePlayer(player = {}) {
     plot_hidden_hardship_pressure: toNumber(player.plot_hidden_hardship_pressure, 0),
     plot_support_contributed: toNumber(player.plot_support_contributed, 0),
     plot_supply_contributed: toNumber(player.plot_supply_contributed, 0),
+    bot_archetype: player.bot_archetype || null,
+    bot_archetype_label: player.bot_archetype_label || null,
+    bot_archetype_description: player.bot_archetype_description || null,
     plot_can_found: Boolean(player.plot_can_found),
     deal_summary: {
       active_deal_count: toNumber(player?.deal_summary?.active_deal_count, 0),
@@ -327,6 +436,9 @@ export function normalizeProperty(property = {}) {
     current_value: currentValue,
     currentValue,
     property_type: property.property_type ?? property.type ?? 'property',
+    corporate_owner_id: property.corporate_owner_id ?? null,
+    corporate_listing_price: toNumber(property.corporate_listing_price, 0),
+    corporate_rent: toNumber(property.corporate_rent, 0),
     social_incident_type: property.social_incident_type ?? null,
     social_watch_state: property.social_watch_state ?? 'stable',
     social_tension: toNumber(property.social_tension, 0),
@@ -391,6 +503,9 @@ function mergePropertySocial(property = {}, socialProperties = {}) {
     social_plot_reintegration_progress: toNumber(social.plot_reintegration_progress, 0),
     social_plot_reintegration_pushes: toNumber(social.plot_reintegration_pushes, 0),
     social_plot_security_subsidy_until_round: toNumber(social.plot_security_subsidy_until_round, 0),
+    corporate_owner_id: property.corporate_owner_id ?? null,
+    corporate_listing_price: toNumber(property.corporate_listing_price, 0),
+    corporate_rent: toNumber(property.corporate_rent, 0),
   };
 }
 
@@ -556,6 +671,18 @@ function normalizePlot(plot = {}) {
     support: toNumber(plot.support, 0),
     supply: toNumber(plot.supply, 0),
     heat: toNumber(plot.heat, 0),
+    joint_account_balance: toNumber(plot.joint_account_balance, 0),
+    joint_account_contribution_rate: toNumber(plot.joint_account_contribution_rate, 0.4),
+    joint_account_contributions: Object.fromEntries(
+      Object.entries(plot.joint_account_contributions || {}).map(([playerId, amount]) => [
+        String(playerId),
+        toNumber(amount, 0),
+      ]),
+    ),
+    strategic_goal: plot.strategic_goal || null,
+    strategic_goal_text: plot.strategic_goal_text || null,
+    goal_target_region: plot.goal_target_region || null,
+    goal_target_property_id: plot.goal_target_property_id == null ? null : toNumber(plot.goal_target_property_id, null),
     support_generated_total: toNumber(plot.support_generated_total, 0),
     control_percent: toNumber(plot.control_percent, 0),
     created_round: plot.created_round == null ? null : toNumber(plot.created_round, null),

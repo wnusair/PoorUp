@@ -40,18 +40,18 @@ SETTINGS_KEY_ALIASES = {
 
 def normalize_government_type(raw_value) -> str:
     if raw_value is None:
-        return "liberal_democracy"
+        return "minarchism"
 
     value = str(raw_value).strip().lower()
     if not value:
-        return "liberal_democracy"
+        return "minarchism"
 
     normalized = GOVERNMENT_TYPE_ALIASES.get(value)
     if normalized is not None:
         return normalized
 
     collapsed = value.replace("-", "_").replace(" ", "_")
-    return GOVERNMENT_TYPE_ALIASES.get(collapsed, "liberal_democracy")
+    return GOVERNMENT_TYPE_ALIASES.get(collapsed, "minarchism")
 
 
 def normalize_game_mode(raw_value) -> str:

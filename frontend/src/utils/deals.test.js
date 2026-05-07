@@ -12,12 +12,12 @@ describe('deal helpers', () => {
     ])).toBe(2);
   });
 
-  it('adds the heads-up bonus on top of the private-equity bonus in 1v1 games', () => {
-    expect(getEffectiveBuildLoanMaxPayout(200, 1.15, 2)).toBeCloseTo(253, 5);
+  it('uses the written build-loan repayment cap in 1v1 games', () => {
+    expect(getEffectiveBuildLoanMaxPayout(200, 1.15, 2)).toBeCloseTo(200, 5);
   });
 
-  it('skips the heads-up bonus when more than two active players remain', () => {
-    expect(getEffectiveBuildLoanMaxPayout(200, 1.15, 3)).toBeCloseTo(230, 5);
+  it('does not apply private-equity bonus multipliers to build-loan caps', () => {
+    expect(getEffectiveBuildLoanMaxPayout(200, 1.15, 3)).toBeCloseTo(200, 5);
   });
 
   it('uses the effective build-loan repayment cap in summaries', () => {
@@ -45,7 +45,7 @@ describe('deal helpers', () => {
       { private_equity_bonus_multiplier: 1.15 },
     );
 
-    expect(summary).toContain('$253');
+    expect(summary).toContain('$200');
     expect(summary).toContain('rent value');
   });
 });

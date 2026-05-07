@@ -6,12 +6,9 @@ import ActiveDealsPanel from './ActiveDealsPanel';
 import { normalizeGovernmentType } from '../../utils/gameState';
 import {
   buildDraftFromDeal,
-  getActivePlayerCount,
-  getBuildLoanHeadsUpMultiplier,
   createEmptyDealClause,
   estimateScopeValue,
   formatDealDeadline,
-  getEffectiveBuildLoanMaxPayout,
   getClauseLabel,
   getClauseTone,
   getDealCounterpartyId,
@@ -428,13 +425,6 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
   const selectedCounterpartyName = selectedDeal ? getDealCounterpartyName(selectedDeal, myPlayerId, players) : null;
   const governmentType = normalizeGovernmentType(economy?.gov_type || economy?.government_type || settings?.government_type || 'liberal_democracy');
   const isLiberalDemocracy = governmentType === 'liberal_democracy';
-  const marketConfidence = Number(economy?.market_confidence || 0);
-  const capitalYieldRate = Number(economy?.capital_yield_rate || 0);
-  const capitalYieldReserveFloor = Math.max(0, Number(economy?.capital_yield_reserve_floor || settings?.go_salary || 200));
-  const privateEquityBonus = Math.max(1, Number(economy?.private_equity_bonus_multiplier || 1));
-  const buildLoanBonusPercent = Math.max(0, (privateEquityBonus - 1) * 100);
-  const activePlayerCount = getActivePlayerCount(players);
-  const headsUpBuildLoanBonusPercent = Math.max(0, (getBuildLoanHeadsUpMultiplier(activePlayerCount) - 1) * 100);
   const terminationRequestedById = selectedDeal?.termination_requested_by_id ?? null;
   const terminationRequestedByMe = terminationRequestedById != null && terminationRequestedById === myPlayerId;
   const terminationRequestedByOther = terminationRequestedById != null && terminationRequestedById !== myPlayerId;
@@ -675,7 +665,7 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
                       <p className="mt-2 text-sm text-gray-300">{summarizeClause(clause, myPlayerId, players, properties, economy)}</p>
                       {isLiberalDemocracy && clause.type === 'development_investment' && (
                         <p className="mt-2 text-xs text-emerald-200/80">
-                          Current build-loan bonus: this deal can pay back up to about {formatMoney(getEffectiveBuildLoanMaxPayout(Number(clause.config?.max_payout || 0), privateEquityBonus, activePlayerCount))}.
+                          Build loans use their written payback cap in Liberal Democracy; market upside now lives in stocks, crypto, bank leverage, and corporate buyouts.
                         </p>
                       )}
                     </div>
@@ -730,54 +720,16 @@ export default function DealDeskModal({ myPlayerId, onSubmit, onRespond, onCount
                 </div>
               </div>
 
-              {isLiberalDemocracy && (
-                <div className="rounded-xl border border-cyan-900/60 bg-cyan-950/20 px-3 py-3 text-xs text-cyan-100">
-                  <div className="flex items-center gap-2">
-                    <p className="font-semibold uppercase tracking-[0.18em] text-cyan-300">This Round's Cash Rules</p>
-                    <HelpTooltip
-                      label="Cash rules help"
-                      content={`Investor Mood changes cash bonuses and build loan returns. Cash Bonus pays on money you keep above ${formatMoney(capitalYieldReserveFloor)}. Build Loan Bonus raises the payback cap on build loans.${activePlayerCount === 2 ? ` A 1v1 bonus is also active, adding another ${headsUpBuildLoanBonusPercent.toFixed(0)}% because you are funding your only rival.` : ''}`}
-                    />
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="inline-flex items-center gap-1 text-cyan-100/80">
-                        <span>Investor Mood</span>
-                        <HelpTooltip content="Higher Investor Mood increases cash bonuses and build loan payback caps." label="Investor Mood help" />
-                      </span>
-                      <span className="font-mono text-cyan-50">{marketConfidence.toFixed(1)}/100</span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="inline-flex items-center gap-1 text-cyan-100/80">
-                        <span>Cash Bonus</span>
-                        <HelpTooltip content={`At round end, cash kept above ${formatMoney(capitalYieldReserveFloor)} earns this bonus.`} label="Cash Bonus help" />
-                      </span>
-                      <span className="font-mono text-cyan-50">{(capitalYieldRate * 100).toFixed(2)}%</span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="inline-flex items-center gap-1 text-cyan-100/80">
-                        <span>Build Loan Bonus</span>
-                        <HelpTooltip content="This increases the maximum total payback on build loans this round." label="Build Loan Bonus help" />
-                      </span>
-                      <span className="font-mono text-cyan-50">+{buildLoanBonusPercent.toFixed(0)}%</span>
-                    </div>
-                  </div>
-                  {activePlayerCount === 2 && (
-                    <p className="mt-2 text-cyan-100/70">1v1 bonus active: build loans can pay back another {headsUpBuildLoanBonusPercent.toFixed(0)}% because you are funding your only rival.</p>
-                  )}
-                </div>
-              )}
-
               {isLiberalDemocracy && clauses.some((clause) => clause.type === 'development_investment') && (
                 <div className="rounded-xl border border-emerald-900/60 bg-emerald-950/20 px-3 py-3 text-xs text-emerald-100">
                   <div className="flex items-center gap-2">
-                    <p className="font-semibold uppercase tracking-[0.18em] text-emerald-300">Max Payback Right Now</p>
-                    <HelpTooltip content="This is the most the lender can get back from each build loan under the current bonuses." label="Max payback help" />
+                    <p className="font-semibold uppercase tracking-[0.18em] text-emerald-300">Written Payback Caps</p>
+                    <HelpTooltip content="Build loans repay only up to the cap written into the deal. Liberal Democracy market bonuses now happen through the Market panel instead." label="Payback cap help" />
                   </div>
                   <div className="mt-2 space-y-1">
                     {clauses.map((clause, index) => (
                       clause.type === 'development_investment' ? (
-                        <p key={clause.key}>Clause {index + 1} can pay back up to {formatMoney(getEffectiveBuildLoanMaxPayout(Number(clause.maxPayout || 0), privateEquityBonus, activePlayerCount))} right now.</p>
+                        <p key={clause.key}>Clause {index + 1} can pay back up to {formatMoney(Number(clause.maxPayout || 0))}.</p>
                       ) : null
                     ))}
                   </div>

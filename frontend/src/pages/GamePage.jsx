@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { useGameStore } from '../hooks/useGameState';
 import { getSocket, useSocket } from '../hooks/useSocket';
 import GameLayout from '../components/Game/GameLayout';
@@ -17,34 +17,32 @@ import {
 export default function GamePage() {
   const { matchId } = useParams();
   const numericMatchId = Number(matchId);
-  const navigate = useNavigate();
   const storedRoomCode = useGameStore((state) => state.roomCode);
-  const {
-    setMyPlayerId, setMatchId, setGamePhase,
-    setPlayers, setProperties, setEconomy,
-    setDeals,
-    setPendingDebts,
-    setTaxStats,
-    setLobbyingStats,
-    setPlayerFinanceHistory,
-    setSocial,
-    setCurrentPlayerId,
-    setSettings,
-    setAwaitingEndTurnPlayerId,
-    setPauseState,
-    setPendingAction,
-    clearPendingAction,
-    setActiveModal,
-    setDiceResult,
-    setDiceRolledThisTurn,
-    setIsRolling,
-    gamePhase,
-  } = useGameStore();
 
   // Fetch initial full game state
   useEffect(() => {
     async function fetchState() {
       try {
+        const {
+          setMyPlayerId, setMatchId, setGamePhase,
+          setPlayers, setProperties, setEconomy,
+          setDeals,
+          setPendingDebts,
+          setTaxStats,
+          setLobbyingStats,
+          setPlayerFinanceHistory,
+          setSocial,
+          setCurrentPlayerId,
+          setSettings,
+          setAwaitingEndTurnPlayerId,
+          setPauseState,
+          setPendingAction,
+          clearPendingAction,
+          setActiveModal,
+          setDiceResult,
+          setDiceRolledThisTurn,
+          setIsRolling,
+        } = useGameStore.getState();
         const { data } = await api.get(`/game/${matchId}/state`);
         const gs = data.state;
         if (!gs) return;
@@ -94,7 +92,9 @@ export default function GamePage() {
           const me = gs.players.find((player) => Number(player.user_id) === Number(user.id));
           if (me) {
             myResolvedPlayerId = me.id;
-            setMyPlayerId(me.id);
+            if (useGameStore.getState().myPlayerId !== me.id) {
+              setMyPlayerId(me.id);
+            }
           }
         }
 
@@ -109,7 +109,7 @@ export default function GamePage() {
         if (gs.pending_action && gs.pending_action.player_id === myResolvedPlayerId) {
           const pendingType = gs.pending_action.type || 'buy_property';
           setPendingAction({ type: pendingType, data: gs.pending_action });
-          if (pendingType === 'buy_property') {
+          if (pendingType === 'buy_property' || pendingType === 'buy_corporate_property') {
             setActiveModal('property');
           }
         } else {
@@ -130,13 +130,6 @@ export default function GamePage() {
     playerId: myPlayerId,
     enabled: Number.isFinite(numericMatchId),
   });
-
-  // Redirect when game ends
-  useEffect(() => {
-    if (gamePhase === 'ended') {
-      // Stay on page — GameOverModal will show
-    }
-  }, [gamePhase, navigate]);
 
   return <GameLayout socketActions={socketActions} myPlayerId={myPlayerId} />;
 }

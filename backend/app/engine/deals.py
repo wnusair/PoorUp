@@ -9,7 +9,6 @@ from app import db
 from app.engine.debt import credit_player_with_debt_settlement, round_money, spend_player_balance
 from app.engine.economy import calculate_rent_with_dev
 from app.models.deal import Deal, DealClause, DealInvestmentTranche
-from app.utils.settings import normalize_government_type
 
 CLAUSE_IMMUNITY = "rent_immunity"
 CLAUSE_DISCOUNT = "rent_discount"
@@ -49,9 +48,6 @@ SUPPORTED_CLAUSE_TYPES = {
     CLAUSE_INVESTMENT,
 }
 
-HEADS_UP_BUILD_LOAN_BONUS_MULTIPLIER = 1.10
-
-
 def deals_enabled(settings: dict | None) -> bool:
     settings = settings or {}
     if "deals_enabled" in settings:
@@ -80,21 +76,8 @@ def _property_map(game_state: dict) -> dict[int, dict]:
     }
 
 
-def active_player_count(game_state: dict | None) -> int:
-    return sum(
-        1
-        for player in ((game_state or {}).get("players") or [])
-        if not bool(player.get("is_bankrupt", False))
-    )
-
-
 def build_loan_bonus_multiplier(game_state: dict | None, econ: dict | None) -> float:
-    multiplier = 1.0
-    if normalize_government_type((econ or {}).get("gov_type") or (econ or {}).get("government_type")) == "liberal_democracy":
-        multiplier *= max(1.0, float((econ or {}).get("private_equity_bonus_multiplier", 1.0) or 1.0))
-    if active_player_count(game_state) == 2:
-        multiplier *= HEADS_UP_BUILD_LOAN_BONUS_MULTIPLIER
-    return multiplier
+    return 1.0
 
 
 def calculate_effective_build_loan_payout(base_payout: float, game_state: dict | None, econ: dict | None) -> float:

@@ -114,35 +114,40 @@ class GovernmentModeDefinitionTests(unittest.TestCase):
         gov = game_loop.initialize_government('liberal_democracy')
 
         self.assertTrue(gov['bailout_enabled'])
-        self.assertGreater(gov['market_confidence'], 0)
-        self.assertGreater(gov['capital_yield_rate'], 0)
-        self.assertGreaterEqual(gov['private_equity_bonus_multiplier'], 1.0)
+        self.assertIn('market', gov)
+        self.assertIn('corporations', gov)
+        self.assertIn('bank', gov)
+        self.assertIn('jobs', gov)
+        self.assertIn('tax_brackets', gov)
+        self.assertGreater(gov['market']['sentiment'], 0)
+        self.assertEqual(gov['corporations']['active_ids'], [])
+        self.assertIn('brackets', gov['tax_brackets'])
 
-    def test_capital_markets_axis_is_only_visible_under_liberal_democracy(self):
+    def test_liberal_democracy_axes_are_only_visible_under_liberal_democracy(self):
         liberal_axes = {axis['axis'] for axis in get_lobbying_axes(government_type='liberal_democracy')}
         social_axes = {axis['axis'] for axis in get_lobbying_axes(government_type='social_democracy')}
 
-        self.assertIn('capital_markets', liberal_axes)
-        self.assertIn('cash_bonus', liberal_axes)
-        self.assertIn('investor_mood', liberal_axes)
-        self.assertNotIn('capital_markets', social_axes)
-        self.assertNotIn('cash_bonus', social_axes)
-        self.assertNotIn('investor_mood', social_axes)
+        self.assertIn('tax_brackets', liberal_axes)
+        self.assertIn('treasury_transfers', liberal_axes)
+        self.assertIn('money_supply', liberal_axes)
+        self.assertNotIn('tax_brackets', social_axes)
+        self.assertNotIn('treasury_transfers', social_axes)
+        self.assertNotIn('money_supply', social_axes)
         self.assertIsNone(
             get_lobbying_policy_definition(
-                target='market_deregulation',
+                target='money_supply_expand',
                 government_type='social_democracy',
             )
         )
         self.assertIsNone(
             get_lobbying_policy_definition(
-                target='cash_bonus_increase',
+                target='tax_bracket_rate_up',
                 government_type='social_democracy',
             )
         )
         self.assertIsNone(
             get_lobbying_policy_definition(
-                target='investor_mood_increase',
+                target='treasury_transfer_players',
                 government_type='social_democracy',
             )
         )

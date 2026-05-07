@@ -51,10 +51,10 @@ export default function StabilityWidget() {
     .slice(0, 3);
 
   return (
-    <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+    <div className="rounded-xl border border-amber-900/40 bg-amber-950/15 p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Stability</h3>
-        <span className="text-[11px] text-gray-500">Top 3 areas</span>
+        <h3 className="text-xs font-semibold text-amber-300 uppercase tracking-wider">Stability</h3>
+        <span className="text-[11px] text-amber-700">Top 3 areas</span>
       </div>
 
       {topTerritories.length === 0 ? (

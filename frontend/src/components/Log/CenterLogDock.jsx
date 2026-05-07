@@ -5,7 +5,7 @@ import { formatTimestamp } from '../../utils/formatters';
 
 const MAX_CENTER_LOG_ENTRIES = 18;
 
-export default function CenterLogDock() {
+export default function CenterLogDock({ compact = false }) {
   const logEntries = useGameStore((state) => state.logEntries);
   const players = useGameStore((state) => state.players);
   const scrollContainerRef = useRef(null);
@@ -35,11 +35,11 @@ export default function CenterLogDock() {
   }, [latestEntryId]);
 
   return (
-    <div className="pointer-events-auto absolute bottom-[clamp(0.75rem,2vh,1.5rem)] left-1/2 z-10 w-[min(92%,34rem)] -translate-x-1/2">
+    <div className={`pointer-events-auto absolute z-10 ${compact ? 'bottom-[clamp(0.5rem,1.5vh,1rem)] left-[clamp(0.5rem,2vw,1rem)] w-[min(55%,22rem)]' : 'bottom-[clamp(0.75rem,2vh,1.5rem)] left-1/2 w-[min(92%,34rem)] -translate-x-1/2'}`}>
       <div
         ref={scrollContainerRef}
         aria-label="Recent game events"
-        className="max-h-[clamp(7rem,22vh,11rem)] overflow-y-auto pr-2"
+        className={`overflow-y-auto pr-2 ${compact ? 'max-h-[clamp(4rem,10vh,6rem)]' : 'max-h-[clamp(7rem,22vh,11rem)]'}`}
       >
         {entries.length === 0 ? (
           <p className="text-xs text-slate-500">No game events yet.</p>

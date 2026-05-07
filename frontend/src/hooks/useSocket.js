@@ -321,19 +321,20 @@ function applyGameStateSnapshot(gameState, actions) {
     const myPlayerId = useGameStore.getState().myPlayerId;
     const isMovementInProgress = useGameStore.getState().movingPlayerId !== null;
     const isLocalPrompt = gameState.pending_action.player_id == null || gameState.pending_action.player_id === myPlayerId;
+    const isPropertyPrompt = pendingType === 'buy_property' || pendingType === 'buy_corporate_property';
 
     if (isLocalPrompt) {
       actions.setPendingAction({ type: pendingType, data: gameState.pending_action });
     } else {
       const state = useGameStore.getState();
-      if (state.pendingAction?.type === 'buy_property') {
+      if (state.pendingAction?.type === 'buy_property' || state.pendingAction?.type === 'buy_corporate_property') {
         if (state.activeModal === 'property') {
           actions.closeModal();
         }
         actions.clearPendingAction();
       }
     }
-    if (isLocalPrompt && pendingType === 'buy_property') {
+    if (isLocalPrompt && isPropertyPrompt) {
       if (isMovementInProgress) {
         useGameStore.getState().queuePendingEvent(() => {
           const state = useGameStore.getState();
@@ -346,7 +347,7 @@ function applyGameStateSnapshot(gameState, actions) {
     }
   } else {
     const state = useGameStore.getState();
-    if (state.pendingAction?.type === 'buy_property') {
+    if (state.pendingAction?.type === 'buy_property' || state.pendingAction?.type === 'buy_corporate_property') {
       if (state.activeModal === 'property') {
         actions.closeModal();
       }
@@ -391,6 +392,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     queuePendingEvent,
     flushPendingEvents,
     setUprisingEvent,
+    setGovernmentEvent,
     setHyperInflation,
     setAuctionState,
     updateAuction,
@@ -519,7 +521,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
         awaitingEndTurnPlayerId: null,
         pendingAction: null,
         activeModal:
-          state.activeModal === 'property' && state.pendingAction?.type === 'buy_property'
+          state.activeModal === 'property' && ['buy_property', 'buy_corporate_property'].includes(state.pendingAction?.type)
             ? null
             : state.activeModal,
       });
@@ -875,6 +877,12 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
       queueOrRun(() => setUprisingEvent(buildUnrestOverlayEvent({ ...data, incident_type: 'revolution' }, 'revolution')));
     });
 
+    subscribe('government_event', (data) => {
+      if (data?.event) {
+        queueOrRun(() => setGovernmentEvent({ ...data.event, round: data.round }));
+      }
+    });
+
     subscribe('union_property_joined', (data) => {
       addLogEntry(normalizeLogEntry({
         event_type: 'union_property_joined',
@@ -1010,12 +1018,25 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     });
 
     subscribe('player_bailed_out', (data) => {
+      const latestState = useGameStore.getState();
+      if (latestState.pendingAction?.type === 'bankruptcy') {
+        clearPendingAction();
+      }
+      if (latestState.activeModal === 'bankruptcy') {
+        closeModal();
+      }
+      updatePlayer(data.player_id, {
+        bankrupt: false,
+        is_bankrupt: false,
+        balance: Number(data?.new_balance ?? data?.player_balance ?? 0) || 0,
+      });
+      const rescuedBalance = Number(data?.new_balance ?? data?.player_balance ?? 0) || 0;
       const confidenceText = Number(data?.confidence_penalty || 0) > 0
-        ? ` Investor Mood fell by ${Number(data.confidence_penalty).toFixed(1)} after ${Number(data?.recent_bailout_count || 1)} recent bailout${Number(data?.recent_bailout_count || 1) === 1 ? '' : 's'}.`
+        ? ` Market sentiment fell by ${Number(data.confidence_penalty).toFixed(1)} after ${Number(data?.recent_bailout_count || 1)} recent bailout${Number(data?.recent_bailout_count || 1) === 1 ? '' : 's'}.`
         : '';
       addLogEntry({
         type: 'welfare_paid',
-        message: `${data.player_name || 'Player'} was bailed out for $${data.amount} and now has $${data.player_balance}.${confidenceText}`,
+        message: `${data.player_name || 'Player'} was bailed out for $${data.amount} and now has $${rescuedBalance}.${confidenceText}`,
         player_id: data.player_id,
         timestamp: new Date().toISOString(),
       });
@@ -1060,7 +1081,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
           return;
         }
 
-        setPendingAction({ type: 'buy_property', data: { ...data, property } });
+        setPendingAction({ type: data.type || 'buy_property', data: { ...data, property } });
         setActiveModal('property');
       });
     });
@@ -1217,6 +1238,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
   const rollDice = useCallback(() => emit('roll_dice', {}), [emit]);
   const endTurn = useCallback(() => emit('end_turn', {}), [emit]);
   const buyProperty = useCallback(() => emit('buy_property', {}), [emit]);
+  const buyCorporateProperty = useCallback(() => emit('buy_corporate_property', {}), [emit]);
   const declineProperty = useCallback(() => emit('decline_property', {}), [emit]);
   const placeBid = useCallback((amount) => emit('auction_bid', { amount }), [emit]);
   const submitTrade = useCallback((data) => emit('submit_trade', data), [emit]);
@@ -1236,6 +1258,11 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
   const plotJoin = useCallback((data = {}) => emitWithAck('plot_join', data), [emitWithAck]);
   const plotLeave = useCallback((data = {}) => emitWithAck('plot_leave', data), [emitWithAck]);
   const plotCounterAction = useCallback((data = {}) => emitWithAck('plot_counter_action', data), [emitWithAck]);
+  const submitMarketOrder = useCallback((data = {}) => emitWithAck('submit_market_order', data), [emitWithAck]);
+  const depositBankFunds = useCallback((data = {}) => emitWithAck('deposit_bank_funds', data), [emitWithAck]);
+  const withdrawBankFunds = useCallback((data = {}) => emitWithAck('withdraw_bank_funds', data), [emitWithAck]);
+  const requestBankLoan = useCallback((data = {}) => emitWithAck('request_bank_loan', data), [emitWithAck]);
+  const repayBankLoan = useCallback((data = {}) => emitWithAck('repay_bank_loan', data), [emitWithAck]);
   const developProperty = useCallback((propertyRef, options = {}) => emit('develop_property', buildPropertyPayload(propertyRef, options)), [emit, buildPropertyPayload]);
   const mortgageProperty = useCallback((propertyRef) => emit('mortgage_property', buildPropertyPayload(propertyRef)), [emit, buildPropertyPayload]);
   const sellHouse = useCallback((propertyRef) => emit('sell_house', buildPropertyPayload(propertyRef)), [emit, buildPropertyPayload]);
@@ -1254,6 +1281,7 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     rollDice,
     endTurn,
     buyProperty,
+    buyCorporateProperty,
     declineProperty,
     placeBid,
     submitTrade,
@@ -1270,6 +1298,11 @@ export function useSocket({ roomCode, matchId = null, playerId, enabled = true }
     plotJoin,
     plotLeave,
     plotCounterAction,
+    submitMarketOrder,
+    depositBankFunds,
+    withdrawBankFunds,
+    requestBankLoan,
+    repayBankLoan,
     developProperty,
     mortgageProperty,
     sellHouse,

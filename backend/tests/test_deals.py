@@ -53,7 +53,7 @@ class DealEngineTests(unittest.TestCase):
         self.addCleanup(lambda: db.metadata.drop_all(bind=db.engine, tables=list(reversed(self.tables))))
         self.addCleanup(db.session.remove)
 
-    def test_calculate_effective_build_loan_payout_applies_liberal_democracy_and_heads_up_bonus(self):
+    def test_calculate_effective_build_loan_payout_uses_written_cap_without_ld_bonus(self):
         game_state = {
             'players': [
                 {'id': 1, 'username': 'Atlas', 'balance': 500.0, 'is_bankrupt': False},
@@ -67,7 +67,7 @@ class DealEngineTests(unittest.TestCase):
 
         payout = deals.calculate_effective_build_loan_payout(200, game_state, economy)
 
-        self.assertEqual(payout, 253.0)
+        self.assertEqual(payout, 200.0)
 
     def test_request_deal_termination_records_first_request(self):
         deal = SimpleNamespace(

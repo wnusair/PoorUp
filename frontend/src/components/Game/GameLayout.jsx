@@ -23,9 +23,13 @@ import LobbyModal from '../Lobby/LobbyModal';
 import StabilityPanelModal from '../Modals/StabilityPanelModal';
 import TaxationDetailsModal from '../Modals/TaxationDetailsModal';
 import PlotPanelModal from '../Modals/PlotPanelModal';
+import LiberalDemocracyPanelModal from '../Modals/LiberalDemocracyPanelModal';
+import GovernmentEventModal from '../Modals/GovernmentEventModal';
 
 import { useGameStore } from '../../hooks/useGameState';
 import { gameGetLog } from '../../utils/api';
+import { normalizeGovernmentType } from '../../utils/gameState';
+import PlayerHUD from './PlayerHUD';
 
 export default function GameLayout({ socketActions, myPlayerId }) {
   const { matchId } = useParams();
@@ -42,6 +46,9 @@ export default function GameLayout({ socketActions, myPlayerId }) {
     setLogEntries,
     players,
     properties,
+    economy,
+    settings,
+    governmentEvent,
   } = useGameStore();
 
   const [selectedSpace, setSelectedSpace] = useState(null);
@@ -81,6 +88,10 @@ export default function GameLayout({ socketActions, myPlayerId }) {
         current_value: properties[selectedSpace.position]?.current_value ?? selectedSpace.basePrice ?? null,
       }
     : null;
+  const governmentType = normalizeGovernmentType(
+    economy?.gov_type || economy?.government_type || settings?.government_type || 'liberal_democracy',
+  );
+  const isLiberalDemocracy = governmentType === 'liberal_democracy';
 
   return (
     <div className="flex flex-col h-screen bg-gray-900 text-white overflow-hidden">
@@ -105,7 +116,7 @@ export default function GameLayout({ socketActions, myPlayerId }) {
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
             <PlayerPanel />
             <EconomyDashboard />
-            <StabilityWidget />
+            {!isLiberalDemocracy && <StabilityWidget />}
             <TradeQueueWidget />
             <DealsWidget />
             <SidebarMenuStack />
@@ -124,15 +135,21 @@ export default function GameLayout({ socketActions, myPlayerId }) {
         </div>
       </div>
 
+      {/* Fixed player HUD — visible only when a panel/modal is open */}
+      <PlayerHUD visible={!!(activeModal || cardDrawData || uprisingEvent || selectedSpace || governmentEvent)} />
+
       {/* Uprising overlay — full screen */}
       {uprisingEvent && <UprisingOverlay event={uprisingEvent} />}
+
+      {/* Government policy event popup */}
+      {isLiberalDemocracy && <GovernmentEventModal />}
 
       {/* Modals */}
       {activeModal === 'property' && (
         <PropertyModal
           mode="prompt"
           data={pendingAction?.data}
-          onBuy={socketActions?.buyProperty}
+          onBuy={pendingAction?.type === 'buy_corporate_property' ? socketActions?.buyCorporateProperty : socketActions?.buyProperty}
           onDecline={socketActions?.declineProperty}
           onClose={closeModal}
         />
@@ -210,6 +227,12 @@ export default function GameLayout({ socketActions, myPlayerId }) {
           onPlotJoin={socketActions?.plotJoin}
           onPlotLeave={socketActions?.plotLeave}
           onPlotCounterAction={socketActions?.plotCounterAction}
+        />
+      )}
+      {activeModal === 'liberal_democracy' && (
+        <LiberalDemocracyPanelModal
+          socketActions={socketActions}
+          onClose={closeModal}
         />
       )}
       {activeModal === 'bankruptcy' && (

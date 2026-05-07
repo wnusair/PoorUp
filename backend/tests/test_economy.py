@@ -23,6 +23,7 @@ from app.engine.economy import (  # noqa: E402
     pay_welfare,
     property_is_fully_developed,
 )
+from app.engine.liberal_democracy import apply_tax_bracket_policy  # noqa: E402
 
 
 class EconomyEngineTests(unittest.TestCase):
@@ -195,9 +196,14 @@ class EconomyEngineTests(unittest.TestCase):
 
         self.assertEqual(econ['gov_type'], 'liberal_democracy')
         self.assertGreater(econ['market_confidence'], 0)
-        self.assertGreater(econ['capital_yield_rate'], 0)
+        self.assertEqual(econ['capital_yield_rate'], 0.0)
         self.assertGreaterEqual(econ['private_equity_bonus_multiplier'], 1.0)
-        self.assertGreaterEqual(econ['capital_yield_reserve_floor'], 150.0)
+        self.assertEqual(econ['capital_yield_reserve_floor'], 0.0)
+        self.assertIn('market', econ)
+        self.assertIn('corporations', econ)
+        self.assertIn('bank', econ)
+        self.assertIn('jobs', econ)
+        self.assertIn('tax_brackets', econ)
 
     def test_liberal_democracy_capital_yield_rewards_liquidity_with_cap(self):
         players = [
@@ -221,39 +227,29 @@ class EconomyEngineTests(unittest.TestCase):
             {'government_type': 'liberal_democracy', 'go_salary': 200},
         )
 
-        payout = round(updated_players[0]['balance'] - players[0]['balance'], 2)
-        self.assertTrue(distribution['successful'])
-        self.assertEqual(distribution['eligible_count'], 1)
-        self.assertGreater(payout, 35.0)
-        self.assertLessEqual(payout, updated_econ['capital_yield_cap_per_player'])
+        self.assertFalse(distribution['successful'])
+        self.assertEqual(distribution['eligible_count'], 0)
+        self.assertEqual(distribution['total_payout'], 0.0)
+        self.assertEqual(distribution['reason'], 'The old cash bonus has been retired in this Liberal Democracy mode.')
+        self.assertEqual(updated_players[0]['balance'], players[0]['balance'])
         self.assertEqual(updated_players[1]['balance'], players[1]['balance'])
         self.assertEqual(updated_econ['capital_yield_last_round'], distribution['total_payout'])
 
-    def test_liberal_democracy_cash_bonus_policy_bonus_changes_rate(self):
-        baseline = ensure_regime_economy_state(
+    def test_liberal_democracy_tax_bracket_policy_updates_boundaries_and_rates(self):
+        econ = ensure_regime_economy_state(
             {
                 'gov_type': 'liberal_democracy',
                 'government_type': 'liberal_democracy',
-                'market_confidence': 60.0,
-                'interest_rate': 0.04,
-                'inflation_rate': 0.05,
-                'capital_yield_rate_policy_bonus': 0.0,
-            },
-            {'government_type': 'liberal_democracy', 'go_salary': 200},
-        )
-        boosted = ensure_regime_economy_state(
-            {
-                'gov_type': 'liberal_democracy',
-                'government_type': 'liberal_democracy',
-                'market_confidence': 60.0,
-                'interest_rate': 0.04,
-                'inflation_rate': 0.05,
-                'capital_yield_rate_policy_bonus': 0.006,
             },
             {'government_type': 'liberal_democracy', 'go_salary': 200},
         )
 
-        self.assertGreater(boosted['capital_yield_rate'], baseline['capital_yield_rate'])
+        boundary_shifted = apply_tax_bracket_policy(econ, mode='boundary_up')
+        rate_shifted = apply_tax_bracket_policy(boundary_shifted, mode='rate_up')
+
+        self.assertEqual(boundary_shifted['tax_brackets']['brackets'][0]['max_net_worth'], 2499)
+        self.assertEqual(boundary_shifted['tax_brackets']['brackets'][1]['min_net_worth'], 2500)
+        self.assertAlmostEqual(rate_shifted['tax_brackets']['brackets'][0]['rate'], 0.02, places=4)
 
     def test_liberal_democracy_drift_pulls_high_welfare_back_toward_market_center(self):
         players = [

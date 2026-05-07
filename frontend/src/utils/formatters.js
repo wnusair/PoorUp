@@ -88,7 +88,7 @@ export function formatCountdown(seconds) {
  * Calculate net worth for a player given the properties object (keyed by position or array).
  * Mirrors the backend formula: balance + prop_value - mortgage_debt
  */
-export function calculateNetWorth(player, properties) {
+export function calculateNetWorth(player, properties, economy) {
   const balance = parseFloat(player.balance || 0);
   const props = Array.isArray(properties)
     ? properties.filter(p => p.owner_id === player.id)
@@ -102,5 +102,20 @@ export function calculateNetWorth(player, properties) {
     .filter(p => p.is_mortgaged)
     .reduce((sum, p) => sum + parseFloat(p.base_price || 0) * 0.5, 0);
 
-  return Math.round(balance + propValue - mortgageDebt);
+  let stocksValue = 0;
+  if (economy) {
+    const assets = economy?.market?.assets || {};
+    const portfolio = player.portfolio || {};
+    Object.entries(portfolio.stocks || {}).forEach(([key, qty]) => {
+      stocksValue += (Number(qty) || 0) * (Number(assets[key]?.price) || 0);
+    });
+    Object.entries(portfolio.crypto || {}).forEach(([key, qty]) => {
+      stocksValue += (Number(qty) || 0) * (Number(assets[key]?.price) || 0);
+    });
+  }
+
+  const bankAccounts = economy?.bank?.players || economy?.bank?.accounts || {};
+  const savings = Number(bankAccounts[String(player.id)]?.savings_balance) || 0;
+
+  return Math.round(balance + propValue - mortgageDebt + stocksValue + savings);
 }

@@ -28,8 +28,14 @@ const LOBBY_TARGET_LABELS = {
   bailout_enable: 'Turn bailouts on',
   bailout_disable: 'Turn bailouts off',
   rent_control: 'Cap rent growth',
-  market_deregulation: 'Looser investor rules',
-  capital_controls: 'Stricter investor rules',
+  tax_bracket_rate_up: 'Raise a tax bracket rate',
+  tax_bracket_rate_down: 'Lower a tax bracket rate',
+  tax_bracket_boundary_up: 'Lift a tax bracket threshold',
+  tax_bracket_boundary_down: 'Lower a tax bracket threshold',
+  treasury_transfer_players: 'Send treasury money to players',
+  treasury_transfer_treasury: 'Rebuild treasury reserves',
+  money_supply_expand: 'Expand money supply',
+  money_supply_contract: 'Tighten money supply',
 };
 
 function humanizeToken(value) {

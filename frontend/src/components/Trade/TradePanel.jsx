@@ -72,12 +72,14 @@ export default function TradePanel({ myPlayerId, onSubmit, onRespond, onClose })
       { target: 'economic_stimulus', label: 'Fund Economic Stimulus' },
       ...(govType === 'liberal_democracy'
         ? [
-          { target: 'market_deregulation', label: 'Loosen Investor Rules' },
-          { target: 'capital_controls', label: 'Tighten Investor Rules' },
-          { target: 'cash_bonus_increase', label: 'Increase Cash Bonus' },
-          { target: 'cash_bonus_decrease', label: 'Decrease Cash Bonus' },
-          { target: 'investor_mood_increase', label: 'Boost Investor Mood' },
-          { target: 'investor_mood_decrease', label: 'Cool Investor Mood' },
+          { target: 'tax_bracket_rate_up', label: 'Raise A Tax Bracket Rate' },
+          { target: 'tax_bracket_rate_down', label: 'Lower A Tax Bracket Rate' },
+          { target: 'tax_bracket_boundary_up', label: 'Lift A Tax Bracket Threshold' },
+          { target: 'tax_bracket_boundary_down', label: 'Lower A Tax Bracket Threshold' },
+          { target: 'treasury_transfer_players', label: 'Send Treasury Money To Players' },
+          { target: 'treasury_transfer_treasury', label: 'Rebuild Treasury Reserves' },
+          { target: 'money_supply_expand', label: 'Expand Money Supply' },
+          { target: 'money_supply_contract', label: 'Tighten Money Supply' },
         ]
         : []),
     ];

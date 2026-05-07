@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import HelpTooltip from '../Common/HelpTooltip';
 import { useGameStore } from '../../hooks/useGameState';
 import { gameLobby } from '../../utils/api';
-import { formatMoney, formatRelativeTime } from '../../utils/formatters';
+import { calculateNetWorth, formatMoney, formatRelativeTime } from '../../utils/formatters';
 import { numberValue } from '../../utils/economy';
 import { normalizeGovernmentType } from '../../utils/gameState';
 
@@ -10,12 +10,12 @@ const LOBBYING_BASE_SUCCESS_CHANCE = 0.18;
 const LOBBYING_MAX_SUCCESS_CHANCE = 0.97;
 
 const AXIS_ORDER = [
-  'tax_multiplier',
   'welfare_rate',
   'bailouts',
-  'capital_markets',
-  'cash_bonus',
-  'investor_mood',
+  'tax_brackets',
+  'treasury_transfers',
+  'money_supply',
+  'tax_multiplier',
   'housing_regulation',
   'treasury_posture',
 ];
@@ -25,6 +25,7 @@ const AXIS_FALLBACKS = {
     axis: 'tax_multiplier',
     label: 'Tax Multiplier',
     description: 'Lower taxes for relief or raise them to rebuild the treasury.',
+    governmentTypes: ['social_democracy'],
     directions: {
       decrease: {
         label: 'Decrease',
@@ -85,69 +86,83 @@ const AXIS_FALLBACKS = {
       },
     },
   },
-  capital_markets: {
-    axis: 'capital_markets',
-    label: 'Investor Rules',
-    description: 'Change investor rewards and the instability they add.',
+  tax_brackets: {
+    axis: 'tax_brackets',
+    label: 'Tax Brackets',
+    description: 'Move a visible tax threshold or adjust one bracket rate at a time.',
     governmentTypes: ['liberal_democracy'],
     directions: {
-      expand: {
-        label: 'Expand',
-        target: 'market_deregulation',
-        policy_name: 'Loosen Investor Rules',
-        description: 'Raise Investor Mood, increase investor rewards, and increase instability.',
-        cost_hint: 280,
-      },
-      tighten: {
-        label: 'Tighten',
-        target: 'capital_controls',
-        policy_name: 'Tighten Investor Rules',
-        description: 'Lower Investor Mood, reduce investor rewards, and reduce instability.',
+      rates_up: {
+        label: 'Raise Rate',
+        target: 'tax_bracket_rate_up',
+        policy_name: 'Raise A Tax Bracket Rate',
+        description: 'Increase one tax bracket rate by two percentage points.',
         cost_hint: 260,
       },
-    },
-  },
-  cash_bonus: {
-    axis: 'cash_bonus',
-    label: 'Cash Bonus',
-    description: 'Change the round-end bonus on cash above the reserve floor.',
-    governmentTypes: ['liberal_democracy'],
-    directions: {
-      increase: {
-        label: 'Increase',
-        target: 'cash_bonus_increase',
-        policy_name: 'Increase Cash Bonus',
-        description: 'Directly pays you more at round end for cash kept above the reserve floor.',
-        cost_hint: 250,
+      rates_down: {
+        label: 'Lower Rate',
+        target: 'tax_bracket_rate_down',
+        policy_name: 'Lower A Tax Bracket Rate',
+        description: 'Reduce one tax bracket rate by two percentage points.',
+        cost_hint: 260,
       },
-      decrease: {
-        label: 'Decrease',
-        target: 'cash_bonus_decrease',
-        policy_name: 'Decrease Cash Bonus',
-        description: 'Lower the round-end bonus on cash kept above the reserve floor.',
+      boundary_up: {
+        label: 'Lift Threshold',
+        target: 'tax_bracket_boundary_up',
+        policy_name: 'Lift A Tax Bracket Threshold',
+        description: 'Move one bracket boundary upward by $500.',
+        cost_hint: 240,
+      },
+      boundary_down: {
+        label: 'Lower Threshold',
+        target: 'tax_bracket_boundary_down',
+        policy_name: 'Lower A Tax Bracket Threshold',
+        description: 'Move one bracket boundary downward by $500.',
         cost_hint: 230,
       },
     },
   },
-  investor_mood: {
-    axis: 'investor_mood',
-    label: 'Investor Mood',
-    description: 'Change cash bonuses and build loan returns without changing the cash bonus rate.',
+  treasury_transfers: {
+    axis: 'treasury_transfers',
+    label: 'Treasury Transfers',
+    description: 'Push money out to players or pull policy pressure back toward the treasury.',
     governmentTypes: ['liberal_democracy'],
     directions: {
-      boost: {
-        label: 'Boost',
-        target: 'investor_mood_increase',
-        policy_name: 'Boost Investor Mood',
-        description: 'Raise Investor Mood to strengthen cash bonuses and build loan returns.',
+      spend: {
+        label: 'Pay Players',
+        target: 'treasury_transfer_players',
+        policy_name: 'Send Treasury Money To Players',
+        description: 'Distribute treasury cash directly to active players.',
         cost_hint: 240,
       },
-      cool: {
-        label: 'Cool',
-        target: 'investor_mood_decrease',
-        policy_name: 'Cool Investor Mood',
-        description: 'Lower Investor Mood to weaken cash bonuses and build loan returns.',
+      rebuild: {
+        label: 'Rebuild Treasury',
+        target: 'treasury_transfer_treasury',
+        policy_name: 'Rebuild Treasury Reserves',
+        description: 'Rebuild state reserves instead of paying cash out immediately.',
         cost_hint: 220,
+      },
+    },
+  },
+  money_supply: {
+    axis: 'money_supply',
+    label: 'Money Supply',
+    description: 'Loosen or tighten the macro environment for banks, markets, and prices.',
+    governmentTypes: ['liberal_democracy'],
+    directions: {
+      expand: {
+        label: 'Expand',
+        target: 'money_supply_expand',
+        policy_name: 'Expand Money Supply',
+        description: 'Ease money conditions, lift sentiment, and push inflation upward.',
+        cost_hint: 250,
+      },
+      contract: {
+        label: 'Tighten',
+        target: 'money_supply_contract',
+        policy_name: 'Tighten Money Supply',
+        description: 'Cool sentiment, strengthen interest pressure, and reduce inflation momentum.',
+        cost_hint: 250,
       },
     },
   },
@@ -155,6 +170,7 @@ const AXIS_FALLBACKS = {
     axis: 'housing_regulation',
     label: 'Housing Regulation',
     description: 'Tighten rent controls or loosen the market for development upside.',
+    governmentTypes: ['social_democracy'],
     directions: {
       tighten: {
         label: 'Tighten',
@@ -176,6 +192,7 @@ const AXIS_FALLBACKS = {
     axis: 'treasury_posture',
     label: 'Treasury Posture',
     description: 'Rebuild state capacity or spend directly on stimulus.',
+    governmentTypes: ['social_democracy'],
     directions: {
       rebuild: {
         label: 'Rebuild',
@@ -196,57 +213,62 @@ const AXIS_FALLBACKS = {
 };
 
 const AXIS_TOOLTIPS = {
-  capital_markets: 'This changes how strong investor rewards are overall and how much instability they add.',
-  cash_bonus: 'This is the round-end percent paid on cash you keep above the reserve floor.',
-  investor_mood: 'This changes how strong cash bonuses and build loan payback caps are.',
+  tax_brackets: 'Each successful push either moves one visible threshold by $500 or changes one bracket rate by two percentage points.',
+  treasury_transfers: 'These policies change whether the treasury pays money outward or rebuilds its own balance.',
+  money_supply: 'This changes the background pressure on inflation, interest, and market sentiment.',
 };
 
 const DIRECTION_TOOLTIPS = {
-  market_deregulation: 'Raises Investor Mood and investor rewards, but also increases instability.',
-  capital_controls: 'Lowers Investor Mood and reduces instability.',
-  cash_bonus_increase: 'Raises the round-end bonus on cash kept above the reserve floor.',
-  cash_bonus_decrease: 'Lowers the round-end bonus on cash kept above the reserve floor.',
-  investor_mood_increase: 'Raises Investor Mood, which strengthens cash bonuses and build loan payback caps.',
-  investor_mood_decrease: 'Lowers Investor Mood, which weakens cash bonuses and build loan payback caps.',
+  tax_bracket_rate_up: 'Raises one bracket rate by two percentage points.',
+  tax_bracket_rate_down: 'Lowers one bracket rate by two percentage points.',
+  tax_bracket_boundary_up: 'Moves one bracket threshold upward by $500.',
+  tax_bracket_boundary_down: 'Moves one bracket threshold downward by $500.',
+  treasury_transfer_players: 'Pushes money from the treasury out to active players.',
+  treasury_transfer_treasury: 'Keeps policy pressure focused on rebuilding reserves.',
+  money_supply_expand: 'Boosts liquidity, which helps markets but risks more inflation.',
+  money_supply_contract: 'Tightens liquidity, which cools prices and risk appetite.',
 };
 
 const LIBERAL_DEMOCRACY_GUIDE = [
   {
-    title: 'Cash Bonus',
-    headline: 'Direct payout button',
-    body: 'Use this if you expect to finish the round with cash above the reserve floor.',
+    title: 'Tax Pyramid',
+    headline: 'Visible win lever',
+    body: 'Bracket thresholds and rates now shape how fast different net-worth tiers can pull away.',
   },
   {
-    title: 'Investor Mood',
-    headline: 'Confidence only',
-    body: 'Use this to change cash bonuses and build loan returns without changing the cash bonus rate itself.',
+    title: 'Treasury Transfers',
+    headline: 'Cash routing lever',
+    body: 'Use this to decide whether public money props players up now or rebuilds state reserves first.',
   },
   {
-    title: 'Investor Rules',
-    headline: 'Broad market heat',
-    body: 'Looser rules raise investor rewards and instability. Tighter rules lower both.',
+    title: 'Money Supply',
+    headline: 'Macro pressure lever',
+    body: 'Expansion helps markets and credit; contraction cools inflation and risk appetite.',
   },
 ];
 
 
 function describeProjectedEffect(direction, economy) {
   const marketConfidence = numberValue(economy?.market_confidence, 0);
-  const cashBonusRate = numberValue(economy?.capital_yield_rate, 0) * 100;
-  const reserveFloor = numberValue(economy?.capital_yield_reserve_floor, 0);
+  const inflationRate = numberValue(economy?.inflation_rate, 0) * 100;
 
   switch (direction?.target) {
-    case 'market_deregulation':
-      return `If this passes, Investor Mood rises above ${marketConfidence.toFixed(1)} and the market side of liberal democracy gets stronger, but stability slips.`;
-    case 'capital_controls':
-      return `If this passes, Investor Mood falls below ${marketConfidence.toFixed(1)} and the board steadies. Use it to cool rival investor play.`;
-    case 'cash_bonus_increase':
-      return `If this passes, the spare-cash bonus climbs above the current ${cashBonusRate.toFixed(2)}% rate on money you keep above ${formatMoney(reserveFloor)}.`;
-    case 'cash_bonus_decrease':
-      return `If this passes, the spare-cash bonus drops below the current ${cashBonusRate.toFixed(2)}% rate and the board gets calmer.`;
-    case 'investor_mood_increase':
-      return `If this passes, Investor Mood rises above ${marketConfidence.toFixed(1)} without changing the cash-bonus rate directly.`;
-    case 'investor_mood_decrease':
-      return `If this passes, Investor Mood falls below ${marketConfidence.toFixed(1)} without changing the cash-bonus rate directly.`;
+    case 'tax_bracket_rate_up':
+      return 'If this passes, one tax bracket rate rises by two percentage points.';
+    case 'tax_bracket_rate_down':
+      return 'If this passes, one tax bracket rate falls by two percentage points.';
+    case 'tax_bracket_boundary_up':
+      return 'If this passes, one visible tax threshold moves upward by $500.';
+    case 'tax_bracket_boundary_down':
+      return 'If this passes, one visible tax threshold moves downward by $500.';
+    case 'treasury_transfer_players':
+      return 'If this passes, the treasury sends money directly to active players.';
+    case 'treasury_transfer_treasury':
+      return 'If this passes, state reserves are rebuilt instead of paying money outward.';
+    case 'money_supply_expand':
+      return `If this passes, sentiment rises above ${marketConfidence.toFixed(1)} and inflation pressure climbs above ${inflationRate.toFixed(1)}%.`;
+    case 'money_supply_contract':
+      return `If this passes, sentiment cools below ${marketConfidence.toFixed(1)} and inflation pressure eases from ${inflationRate.toFixed(1)}%.`;
     case 'bailout_enable':
       return 'If this passes, the treasury can rescue insolvent players again whenever it has enough cash.';
     case 'bailout_disable':
@@ -350,9 +372,16 @@ function AxisDirectionButton({ direction, selected, onClick }) {
   const actionMeta = [direction.axis_label, direction.direction_label || direction.label].filter(Boolean).join(' · ');
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       className={[
         'rounded-2xl border p-4 text-left transition',
         selected
@@ -388,7 +417,7 @@ function AxisDirectionButton({ direction, selected, onClick }) {
         <span>{direction.contributor_count || 0} contributors</span>
         <span>Suggested {formatMoney(direction.cost_hint)}</span>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -483,12 +512,144 @@ function AxisCard({ axis, selectedEntry, onSelectDirection, onAmountChange, econ
   );
 }
 
+function TaxBracketPyramid({ players, properties, economy, myPlayerId, selectedTierKey, onTierSelect, contributions }) {
+  const taxBrackets = Array.isArray(economy?.tax_brackets)
+    ? economy.tax_brackets
+    : Array.isArray(economy?.tax_brackets?.brackets)
+      ? economy.tax_brackets.brackets
+      : [];
+
+  const playerNetWorths = useMemo(() => players.map((player) => ({
+    player,
+    netWorth: calculateNetWorth(player, properties, economy),
+  })), [players, properties, economy]);
+
+  const findBracket = (netWorth) => {
+    if (!taxBrackets.length) return null;
+    return taxBrackets.find((b) => {
+      const min = Number(b.min_net_worth ?? 0);
+      const max = b.max_net_worth == null ? Infinity : Number(b.max_net_worth);
+      return netWorth >= min && netWorth <= max;
+    }) || taxBrackets[taxBrackets.length - 1];
+  };
+
+  if (!taxBrackets.length) {
+    return (
+      <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-4 text-sm text-gray-500">
+        Tax bracket data not available yet.
+      </div>
+    );
+  }
+
+  const bracketsTopToBottom = [...taxBrackets].reverse();
+  const totalBrackets = taxBrackets.length;
+  const taxContribution = contributions?.tax_brackets;
+
+  return (
+    <div className="rounded-3xl border border-fuchsia-900/50 bg-fuchsia-950/10 p-5 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-white">Tax Bracket Pyramid</p>
+          <p className="mt-1 text-xs text-gray-400">
+            Click a tier to target it for lobbying. Size reflects how many players occupy each tier.
+          </p>
+        </div>
+        {selectedTierKey && (
+          <span className="flex-shrink-0 rounded-full border border-fuchsia-700/60 bg-fuchsia-900/30 px-2.5 py-1 text-[11px] font-semibold text-fuchsia-200">
+            Targeting: {selectedTierKey}
+          </span>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        {bracketsTopToBottom.map((bracket, reverseIndex) => {
+          const bracketIndex = totalBrackets - 1 - reverseIndex;
+          const widthPct = 40 + (bracketIndex / Math.max(1, totalBrackets - 1)) * 60;
+          const playersInTier = playerNetWorths.filter(({ netWorth }) => {
+            const b = findBracket(netWorth);
+            return b && (b.label || b.min_net_worth) === (bracket.label || bracket.min_net_worth);
+          });
+          const tierKey = bracket.label || String(bracket.min_net_worth);
+          const isSelected = tierKey === selectedTierKey;
+          const hasLobbyFunding = taxContribution?.direction && taxContribution?.amount > 0;
+          const dynamicMinHeight = 44 + playersInTier.length * 16;
+
+          return (
+            <div
+              key={bracket.label || `${bracket.min_net_worth}-${bracket.max_net_worth}`}
+              className="mx-auto"
+              style={{ width: `${widthPct}%` }}
+            >
+              <button
+                type="button"
+                onClick={() => onTierSelect(isSelected ? null : tierKey, bracketIndex)}
+                className={[
+                  'w-full rounded-lg border px-2.5 py-2 text-left transition-all duration-150',
+                  isSelected
+                    ? 'border-fuchsia-500/80 bg-fuchsia-900/30 ring-1 ring-fuchsia-500/40'
+                    : 'border-fuchsia-900/40 bg-gray-950/60 hover:border-fuchsia-700/60 hover:bg-fuchsia-950/20',
+                  hasLobbyFunding && !isSelected ? 'border-fuchsia-800/50' : '',
+                ].join(' ')}
+                style={{ minHeight: `${dynamicMinHeight}px` }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-[11px] font-semibold truncate ${isSelected ? 'text-fuchsia-100' : 'text-fuchsia-200'}`}>
+                    {bracket.label || `${formatMoney(bracket.min_net_worth)}+`}
+                  </span>
+                  <span className={`text-[11px] font-bold flex-shrink-0 ${isSelected ? 'text-fuchsia-50' : 'text-fuchsia-100'}`}>
+                    {(Number(bracket.rate || 0) * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[10px] text-gray-500">
+                  {formatMoney(bracket.min_net_worth)}{bracket.max_net_worth != null ? ` – ${formatMoney(bracket.max_net_worth)}` : '+'}
+                  {playersInTier.length > 0 && (
+                    <span className="ml-2 text-gray-400">{playersInTier.length} player{playersInTier.length !== 1 ? 's' : ''}</span>
+                  )}
+                </div>
+                {playersInTier.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {playersInTier.map(({ player }) => (
+                      <div
+                        key={player.id}
+                        className="flex items-center gap-1 rounded-full border px-1.5 py-0.5"
+                        style={{
+                          borderColor: (player.color_hex || '#6b7280') + '80',
+                          backgroundColor: (player.color_hex || '#6b7280') + '25',
+                        }}
+                        title={`${player.username} — ${formatMoney(calculateNetWorth(player, properties, economy))}`}
+                      >
+                        <span
+                          className="h-2 w-2 flex-shrink-0 rounded-full"
+                          style={{ backgroundColor: player.color_hex || '#6b7280' }}
+                        />
+                        <span className={`text-[10px] font-semibold ${player.id === myPlayerId ? 'text-white' : 'text-gray-300'}`}>
+                          {player.username}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {selectedTierKey && (
+        <p className="text-[11px] text-fuchsia-300/80 text-center">
+          Select a rate or threshold direction below under Tax Brackets to lobby for {selectedTierKey}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function LobbyModal({ matchId, onClose }) {
-  const { players, economy, settings, myPlayerId, lobbyingStats } = useGameStore();
+  const { players, properties, economy, settings, myPlayerId, lobbyingStats } = useGameStore();
   const [contributions, setContributions] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+  const [selectedTierKey, setSelectedTierKey] = useState(null);
+  const [selectedBracketIndex, setSelectedBracketIndex] = useState(null);
 
   const me = players.find((player) => player.id === myPlayerId);
   const govType = normalizeGovernmentType(
@@ -542,6 +703,11 @@ export default function LobbyModal({ matchId, onClose }) {
     }));
   };
 
+  const handleTierSelect = (tierKey, bracketIndex) => {
+    setSelectedTierKey(tierKey);
+    setSelectedBracketIndex(bracketIndex);
+  };
+
   const handleSubmit = async () => {
     const payload = Object.entries(contributions)
       .map(([axis, entry]) => {
@@ -568,6 +734,7 @@ export default function LobbyModal({ matchId, onClose }) {
           policy_name: selectedDirection?.policy_name || fallbackDirection?.policy_name || null,
           policy_id: selectedDirection?.id ?? selectedDirection?.policy_id ?? null,
           amount: Math.max(0, numberValue(entry?.amount, 0)),
+          ...(axis === 'tax_brackets' && selectedBracketIndex != null ? { bracket_index: selectedBracketIndex } : {}),
         };
       })
       .filter((entry) => entry.direction && entry.amount > 0);
@@ -648,7 +815,7 @@ export default function LobbyModal({ matchId, onClose }) {
           <div className="grid gap-4 lg:grid-cols-[1.18fr_0.82fr]">
             <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-4 text-sm text-gray-300">
               {govType === 'liberal_democracy'
-                ? 'Cash Bonus is the direct payout lever. Investor Mood changes confidence without changing the payout rate. Investor Rules is the broad market-heat lever that pushes the whole investor side of the regime hotter or colder.'
+                ? 'Liberal Democracy now lobbies around bailouts, tax brackets, treasury transfers, and money supply instead of old reserve-bonus investor knobs.'
                 : 'Axis pools keep the economy visually coherent: taxes, welfare, bailouts, housing, and treasury posture all read as reversible policy directions instead of disconnected cards.'}
             </div>
             <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-4 grid grid-cols-2 gap-3">
@@ -680,7 +847,7 @@ export default function LobbyModal({ matchId, onClose }) {
               <div>
                 <p className="text-sm font-semibold text-white">What Actually Helps You</p>
                 <p className="mt-1 text-xs leading-5 text-gray-400">
-                  Liberal democracy has three market levers, but only one of them is the direct cash-payout button.
+                  Liberal democracy is now about visible tax tiers, corporate wealth, treasury routing, and macro pressure instead of round-end cash bonuses.
                 </p>
               </div>
               <div className="grid gap-3 md:grid-cols-3">
@@ -697,6 +864,15 @@ export default function LobbyModal({ matchId, onClose }) {
 
           <div className="grid gap-5 lg:grid-cols-[1.28fr_0.72fr]">
             <div className="space-y-4">
+              <TaxBracketPyramid
+                players={players}
+                properties={properties}
+                economy={economy}
+                myPlayerId={myPlayerId}
+                selectedTierKey={selectedTierKey}
+                onTierSelect={handleTierSelect}
+                contributions={contributions}
+              />
               {visibleAxes.map((axis) => (
                 <AxisCard
                   key={axis.axis}
